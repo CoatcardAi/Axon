@@ -53,12 +53,20 @@ public class DatabaseSeeder implements CommandLineRunner {
     }
 
     private void seedUsers() {
-        // Seed Admin User
-        if (userRepository.findByUsername("kumaranand43856@gmail.com").isEmpty()) {
+        // Seed or Promote Admin User
+        java.util.Optional<User> existingAdmin = userRepository.findByUsername("kumaranand43856@gmail.com");
+        if (existingAdmin.isPresent()) {
+            User admin = existingAdmin.get();
+            if (!admin.getRoles().contains("ROLE_ADMIN")) {
+                admin.setRoles(java.util.Set.of("ROLE_ADMIN"));
+                userRepository.save(admin);
+                System.out.println("Promoted existing user kumaranand43856@gmail.com to ROLE_ADMIN");
+            }
+        } else {
             User admin = User.builder()
                     .username("kumaranand43856@gmail.com")
                     .password(passwordEncoder.encode("admin123"))
-                    .roles(Set.of("ROLE_ADMIN"))
+                    .roles(java.util.Set.of("ROLE_ADMIN"))
                     .build();
             userRepository.save(admin);
             System.out.println("Default admin user seeded: kumaranand43856@gmail.com / admin123");
