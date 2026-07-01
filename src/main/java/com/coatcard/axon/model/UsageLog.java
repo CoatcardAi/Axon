@@ -40,6 +40,10 @@ public class UsageLog {
 
     private String errorMessage;
 
+    private String prompt;
+
+    private String responseText;
+
     @Indexed
     private Instant timestamp;
 }

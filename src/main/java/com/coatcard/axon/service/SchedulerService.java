@@ -78,7 +78,11 @@ public class SchedulerService {
 
     public void incrementConcurrency(String keyId) {
         try {
-            stringRedisTemplate.opsForValue().increment(getConcurrencyKey(keyId));
+            String key = getConcurrencyKey(keyId);
+            Long current = stringRedisTemplate.opsForValue().increment(key);
+            if (current != null && current == 1) {
+                stringRedisTemplate.expire(key, java.time.Duration.ofSeconds(120));
+            }
         } catch (Exception e) {
             System.err.println("Redis is down, failed to increment concurrency for key: " + keyId);
         }

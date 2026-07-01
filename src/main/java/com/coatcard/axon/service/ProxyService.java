@@ -75,6 +75,8 @@ public class ProxyService {
                         .completionTokens(completionTokens)
                         .latencyMs(latency)
                         .status("SUCCESS")
+                        .prompt(prompt)
+                        .responseText(responseText)
                         .timestamp(Instant.now())
                         .build();
                 usageLogRepository.save(log);
@@ -110,6 +112,7 @@ public class ProxyService {
                         .latencyMs(latency)
                         .status("CLIENT_ERROR")
                         .errorMessage(e.getMessage())
+                        .prompt(prompt)
                         .timestamp(Instant.now())
                         .build();
                 usageLogRepository.save(log);
@@ -143,6 +146,7 @@ public class ProxyService {
                         .latencyMs(latency)
                         .status(errorType)
                         .errorMessage(reason)
+                        .prompt(prompt)
                         .timestamp(Instant.now())
                         .build();
                 usageLogRepository.save(log);

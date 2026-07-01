@@ -49,14 +49,12 @@ public class RateLimitingService {
             String tpmKey = getTpmKey(keyId, currentMinute);
 
             Long rpm = stringRedisTemplate.opsForValue().increment(rpmKey, 1);
-            Long rpmTtl = stringRedisTemplate.getExpire(rpmKey, TimeUnit.SECONDS);
-            if (rpmTtl == null || rpmTtl == -1) {
+            if (rpm != null && rpm == 1) {
                 stringRedisTemplate.expire(rpmKey, 120, TimeUnit.SECONDS);
             }
 
             Long tpm = stringRedisTemplate.opsForValue().increment(tpmKey, tokens);
-            Long tpmTtl = stringRedisTemplate.getExpire(tpmKey, TimeUnit.SECONDS);
-            if (tpmTtl == null || tpmTtl == -1) {
+            if (tpm != null && tpm == tokens) {
                 stringRedisTemplate.expire(tpmKey, 120, TimeUnit.SECONDS);
             }
         } catch (Exception e) {
@@ -96,8 +94,7 @@ public class RateLimitingService {
             long currentMinute = System.currentTimeMillis() / 60000;
             String tpmKey = getTpmKey(keyId, currentMinute);
             Long tpm = stringRedisTemplate.opsForValue().increment(tpmKey, diff);
-            Long tpmTtl = stringRedisTemplate.getExpire(tpmKey, TimeUnit.SECONDS);
-            if (tpmTtl == null || tpmTtl == -1) {
+            if (tpm != null && tpm <= diff) {
                 stringRedisTemplate.expire(tpmKey, 120, TimeUnit.SECONDS);
             }
         } catch (Exception e) {
