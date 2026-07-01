@@ -8,7 +8,10 @@ import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
-@SpringBootTest(properties = "spring.data.redis.repositories.enabled=false")
+@SpringBootTest(properties = {
+    "spring.data.redis.repositories.enabled=false",
+    "spring.data.redis.url=redis://localhost:6379"
+})
 class AxonApplicationTests {
 
     static {

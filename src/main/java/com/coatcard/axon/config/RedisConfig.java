@@ -27,10 +27,53 @@ public class RedisConfig {
         this.env = env;
     }
 
+    public static class SafeRedisServer {
+        private final RedisServer redisServer;
+        
+        public SafeRedisServer(RedisServer redisServer) {
+            this.redisServer = redisServer;
+        }
+        
+        public void start() {
+            if (redisServer != null) {
+                try {
+                    redisServer.start();
+                    System.out.println("Embedded Redis server started successfully on port 6379.");
+                } catch (Exception e) {
+                    System.err.println("Failed to start embedded Redis: " + e.getMessage());
+                }
+            }
+        }
+        
+        public void stop() {
+            if (redisServer != null) {
+                try {
+                    redisServer.stop();
+                    System.out.println("Embedded Redis server stopped.");
+                } catch (Exception e) {
+                    System.err.println("Failed to stop embedded Redis: " + e.getMessage());
+                }
+            }
+        }
+    }
+
     @Bean(initMethod = "start", destroyMethod = "stop")
-    @ConditionalOnProperty(name = "spring.data.redis.url", havingValue = "", matchIfMissing = true)
-    public RedisServer embeddedRedisServer() throws IOException {
-        return new RedisServer(6379);
+    public SafeRedisServer embeddedRedisServer() {
+        String redisUrl = env.getProperty("spring.data.redis.url");
+        if (redisUrl == null || redisUrl.isBlank()) {
+            try (java.net.Socket socket = new java.net.Socket("localhost", 6379)) {
+                System.out.println("Redis port 6379 is already in use (possibly by Docker or local service). Skipping embedded Redis startup.");
+                return new SafeRedisServer(null);
+            } catch (IOException e) {
+                try {
+                    return new SafeRedisServer(new RedisServer(6379));
+                } catch (IOException ex) {
+                    System.err.println("Failed to construct embedded Redis: " + ex.getMessage());
+                    return new SafeRedisServer(null);
+                }
+            }
+        }
+        return new SafeRedisServer(null);
     }
 
     @Bean
