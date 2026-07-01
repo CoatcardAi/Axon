@@ -13,9 +13,16 @@ import org.springframework.data.redis.core.StringRedisTemplate;
     "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration," +
     "org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration," +
     "org.springframework.boot.autoconfigure.data.mongo.MongoAutoConfiguration," +
-    "org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration"
+    "org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration",
+    "spring.data.redis.repositories.enabled=false",
+    "spring.data.redis.url=redis://localhost:6379",
+    "spring.data.mongodb.uri=mongodb://localhost:27017/test"
 })
 class AxonApplicationTests {
+
+    static {
+        AxonApplication.loadDotenv();
+    }
 
     @MockBean
     private UserRepository userRepository;

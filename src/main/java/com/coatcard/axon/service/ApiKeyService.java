@@ -41,7 +41,9 @@ public class ApiKeyService {
 
         existing.setName(details.getName());
         existing.setProvider(details.getProvider());
-        existing.setKeyValue(details.getKeyValue());
+        if (details.getKeyValue() != null && !details.getKeyValue().isBlank() && !details.getKeyValue().contains("...")) {
+            existing.setKeyValue(details.getKeyValue());
+        }
         existing.setModels(details.getModels());
         existing.setLimitRpm(details.getLimitRpm());
         existing.setLimitTpm(details.getLimitTpm());

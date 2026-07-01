@@ -1,5 +1,6 @@
 package com.coatcard.axon.model;
 
+import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -21,12 +22,15 @@ public class AiModel {
     @Id
     private String id;
 
+    @NotBlank(message = "Model name/ID is required")
     private String name; // e.g. "gpt-4o", "claude-3-5-sonnet"
     
     private String modelName; // required by spec
 
+    @NotBlank(message = "Provider is required")
     private String provider; // e.g. "openai", "anthropic"
 
+    @NotBlank(message = "Display name is required")
     private String displayName; // e.g. "GPT-4o"
 
     private boolean active;

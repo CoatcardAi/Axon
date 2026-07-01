@@ -54,8 +54,9 @@ public class SchedulerService {
     }
 
     public Optional<ApiKey> selectKey(String provider, String model, int estimatedTokens, List<String> excludedKeyIds) {
-        // Fetch candidates from Redis
-        List<RedisPairEntry> candidates = redisPairCacheService.getCandidates(provider, model);
+        String normalizedProvider = provider != null ? provider.toLowerCase().trim() : "";
+        String normalizedModel = model != null ? model.toLowerCase().trim() : "";
+        List<RedisPairEntry> candidates = redisPairCacheService.getCandidates(normalizedProvider, normalizedModel);
 
         if (candidates.isEmpty()) {
             return Optional.empty();
@@ -74,7 +75,7 @@ public class SchedulerService {
                     // Look up actual ApiKey from DB briefly for limit checks or do in memory
                     // To keep it high performance, let's load the key object
                     Optional<ApiKey> keyOpt = apiKeyRepository.findById(entry.getKeyId());
-                    return keyOpt.isPresent() && !rateLimitingService.isRateLimited(keyOpt.get(), estimatedTokens);
+                    return keyOpt.isPresent() && !isRateLimitedSafe(keyOpt.get(), estimatedTokens);
                 })
                 .collect(Collectors.toList());
 
@@ -116,23 +117,59 @@ public class SchedulerService {
         return strategy;
     }
 
+    private boolean isCooldownSafe(String keyId) {
+        try {
+            return cooldownService.isCooldown(keyId);
+        } catch (Exception e) {
+            System.err.println("Redis is down, ignoring cooldown check for key: " + keyId);
+            return false;
+        }
+    }
+
+    private boolean isRateLimitedSafe(ApiKey key, int tokens) {
+        try {
+            return rateLimitingService.isRateLimited(key, tokens);
+        } catch (Exception e) {
+            System.err.println("Redis is down, ignoring rate-limiting check for key: " + key.getId());
+            return false;
+        }
+    }
+
     public void incrementConcurrency(String keyId) {
-        stringRedisTemplate.opsForValue().increment(getConcurrencyKey(keyId));
+        try {
+            String key = getConcurrencyKey(keyId);
+            Long current = stringRedisTemplate.opsForValue().increment(key);
+            if (current != null && current == 1) {
+                stringRedisTemplate.expire(key, java.time.Duration.ofSeconds(120));
+            }
+        } catch (Exception e) {
+            System.err.println("Redis is down, failed to increment concurrency for key: " + keyId);
+        }
     }
 
     public void decrementConcurrency(String keyId) {
-        String key = getConcurrencyKey(keyId);
-        String val = stringRedisTemplate.opsForValue().get(key);
-        if (val != null && Integer.parseInt(val) > 0) {
-            stringRedisTemplate.opsForValue().decrement(key);
+        try {
+            String key = getConcurrencyKey(keyId);
+            Long current = stringRedisTemplate.opsForValue().decrement(key);
+            if (current != null && current < 0) {
+                stringRedisTemplate.opsForValue().set(key, "0");
+            }
+        } catch (Exception e) {
+            System.err.println("Redis is down, failed to decrement concurrency for key: " + keyId);
         }
     }
 
     public int getConcurrency(ApiKey apiKey) {
-        String key = getConcurrencyKey(apiKey.getId());
-        String val = stringRedisTemplate.opsForValue().get(key);
-        return val != null ? Integer.parseInt(val) : 0;
+        try {
+            String key = getConcurrencyKey(apiKey.getId());
+            String val = stringRedisTemplate.opsForValue().get(key);
+            return val != null ? Integer.parseInt(val) : 0;
+        } catch (Exception e) {
+            System.err.println("Redis is down, failed to get concurrency for key: " + apiKey.getId());
+            return 0;
+        }
     }
+
 
     private String getConcurrencyKey(String keyId) {
         return "concurrency:" + keyId;
