@@ -3,6 +3,7 @@ package com.coatcard.axon.config;
 import com.coatcard.axon.security.JwtAuthenticationFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -43,6 +44,10 @@ public class SecurityConfig {
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/v1/auth/**").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/v1/keys", "/api/v1/models", "/api/v1/mapping").hasRole("ADMIN")
+                .requestMatchers(HttpMethod.DELETE, "/api/v1/keys/**").hasRole("ADMIN")
+                .requestMatchers("/api/v1/scheduler/resource", "/api/v1/scheduler/report").hasAnyRole("CLIENT", "ADMIN")
+                .requestMatchers("/api/v1/health", "/api/v1/stats").hasAnyRole("CLIENT", "ADMIN")
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 .requestMatchers("/api/v1/schedule/**", "/api/v1/proxy/**").hasAnyRole("CLIENT", "ADMIN")
                 .anyRequest().authenticated()

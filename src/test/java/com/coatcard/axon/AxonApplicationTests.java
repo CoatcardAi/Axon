@@ -8,7 +8,13 @@ import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
-@SpringBootTest
+@SpringBootTest(properties = {
+    "spring.autoconfigure.exclude=" +
+    "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration," +
+    "org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration," +
+    "org.springframework.boot.autoconfigure.data.mongo.MongoAutoConfiguration," +
+    "org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration"
+})
 class AxonApplicationTests {
 
     @MockBean
@@ -27,7 +33,16 @@ class AxonApplicationTests {
     private UsageLogRepository usageLogRepository;
 
     @MockBean
+    private KeyModelMappingRepository keyModelMappingRepository;
+
+    @MockBean
+    private DailyStatisticsRepository dailyStatisticsRepository;
+
+    @MockBean
     private RedisConnectionFactory redisConnectionFactory;
+
+    @MockBean
+    private org.springframework.data.redis.connection.ReactiveRedisConnectionFactory reactiveRedisConnectionFactory;
 
     @MockBean
     private RedisTemplate<String, Object> redisTemplate;

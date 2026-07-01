@@ -1,12 +1,18 @@
 package com.coatcard.axon.service;
 
 import com.coatcard.axon.model.ApiKey;
+import com.coatcard.axon.redis.RedisPairEntry;
 import com.coatcard.axon.repository.ApiKeyRepository;
+import com.coatcard.axon.strategy.LeastRecentlyUsedStrategy;
+import com.coatcard.axon.strategy.RoundRobinStrategy;
+import com.coatcard.axon.strategy.SchedulingStrategy;
+import com.coatcard.axon.utils.EncryptionUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Optional;
@@ -22,6 +28,8 @@ class SchedulerServiceTest {
     private CooldownService cooldownService;
     private StringRedisTemplate stringRedisTemplate;
     private ValueOperations<String, String> valueOperations;
+    private RedisPairCacheService redisPairCacheService;
+    private EncryptionUtils encryptionUtils;
 
     private SchedulerService schedulerService;
 
@@ -33,77 +41,124 @@ class SchedulerServiceTest {
         cooldownService = Mockito.mock(CooldownService.class);
         stringRedisTemplate = Mockito.mock(StringRedisTemplate.class);
         valueOperations = Mockito.mock(ValueOperations.class);
+        redisPairCacheService = Mockito.mock(RedisPairCacheService.class);
+        encryptionUtils = Mockito.mock(EncryptionUtils.class);
 
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(encryptionUtils.decrypt(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        // Use actual strategy implementations to verify logic
+        List<SchedulingStrategy> strategies = List.of(
+                new LeastRecentlyUsedStrategy(),
+                new RoundRobinStrategy()
+        );
 
         schedulerService = new SchedulerService(
                 apiKeyRepository,
                 rateLimitingService,
                 cooldownService,
-                stringRedisTemplate
+                stringRedisTemplate,
+                redisPairCacheService,
+                encryptionUtils,
+                strategies
         );
+
+        // Set default strategy to LRU for tests
+        ReflectionTestUtils.setField(schedulerService, "defaultStrategyName", "LRU");
     }
 
     @Test
-    void testSelectKey_LeastConcurrencyPickedFirst() {
-        ApiKey key1 = ApiKey.builder().id("key1").name("Key 1").provider("openai").limitRpm(60).limitTpm(100000).active(true).build();
-        ApiKey key2 = ApiKey.builder().id("key2").name("Key 2").provider("openai").limitRpm(60).limitTpm(100000).active(true).build();
+    void testSelectKey_LeastRecentlyUsedPickedFirst() {
+        // key1 was used recently (higher timestamp), key2 was used in past (lower timestamp)
+        RedisPairEntry entry1 = RedisPairEntry.builder()
+                .keyId("key1")
+                .modelId("gpt-4o")
+                .provider("openai")
+                .currentStatus("ACTIVE")
+                .lastUsed(2000L)
+                .healthScore(1.0)
+                .build();
+        RedisPairEntry entry2 = RedisPairEntry.builder()
+                .keyId("key2")
+                .modelId("gpt-4o")
+                .provider("openai")
+                .currentStatus("ACTIVE")
+                .lastUsed(1000L)
+                .healthScore(1.0)
+                .build();
 
-        when(apiKeyRepository.findByProviderAndModelsContainingAndActiveTrue("openai", "gpt-4o"))
-                .thenReturn(List.of(key1, key2));
+        ApiKey key1 = ApiKey.builder().id("key1").name("Key 1").provider("openai").active(true).build();
+        ApiKey key2 = ApiKey.builder().id("key2").name("Key 2").provider("openai").active(true).build();
+
+        when(redisPairCacheService.getCandidates("openai", "gpt-4o"))
+                .thenReturn(List.of(entry1, entry2));
+
+        when(apiKeyRepository.findById("key1")).thenReturn(Optional.of(key1));
+        when(apiKeyRepository.findById("key2")).thenReturn(Optional.of(key2));
 
         when(cooldownService.isCooldown(any())).thenReturn(false);
         when(rateLimitingService.isRateLimited(any(), any(Integer.class))).thenReturn(false);
 
-        // Redis concurrency: key1 has 5 active connections, key2 has 2 active connections
-        when(valueOperations.get("concurrency:key1")).thenReturn("5");
-        when(valueOperations.get("concurrency:key2")).thenReturn("2");
-
-        when(rateLimitingService.getRemainingRpm(any())).thenReturn(50);
-        when(rateLimitingService.getRemainingTpm(any())).thenReturn(80000);
-
         Optional<ApiKey> selected = schedulerService.selectKey("openai", "gpt-4o", 100);
 
         assertTrue(selected.isPresent());
-        assertEquals("key2", selected.get().getId()); // Least concurrency (2 < 5) should be selected
+        assertEquals("key2", selected.get().getId()); // key2 has oldest lastUsed (1000 < 2000)
     }
 
     @Test
-    void testSelectKey_HighestCapacityPickedWhenConcurrencyTied() {
-        ApiKey key1 = ApiKey.builder().id("key1").name("Key 1").provider("openai").limitRpm(100).limitTpm(100000).active(true).build();
-        ApiKey key2 = ApiKey.builder().id("key2").name("Key 2").provider("openai").limitRpm(100).limitTpm(100000).active(true).build();
+    void testSelectKey_FiltersOutCooldownEntries() {
+        long now = System.currentTimeMillis();
+        
+        // key1 is in cooldown until future
+        RedisPairEntry entry1 = RedisPairEntry.builder()
+                .keyId("key1")
+                .modelId("gpt-4o")
+                .provider("openai")
+                .currentStatus("ACTIVE")
+                .lastUsed(1000L)
+                .cooldownUntil(now + 10000L)
+                .healthScore(1.0)
+                .build();
+        // key2 is active
+        RedisPairEntry entry2 = RedisPairEntry.builder()
+                .keyId("key2")
+                .modelId("gpt-4o")
+                .provider("openai")
+                .currentStatus("ACTIVE")
+                .lastUsed(1000L)
+                .cooldownUntil(0L)
+                .healthScore(1.0)
+                .build();
 
-        when(apiKeyRepository.findByProviderAndModelsContainingAndActiveTrue("openai", "gpt-4o"))
-                .thenReturn(List.of(key1, key2));
+        ApiKey key1 = ApiKey.builder().id("key1").name("Key 1").provider("openai").active(true).build();
+        ApiKey key2 = ApiKey.builder().id("key2").name("Key 2").provider("openai").active(true).build();
 
-        when(cooldownService.isCooldown(any())).thenReturn(false);
+        when(redisPairCacheService.getCandidates("openai", "gpt-4o"))
+                .thenReturn(List.of(entry1, entry2));
+
+        when(apiKeyRepository.findById("key2")).thenReturn(Optional.of(key2));
         when(rateLimitingService.isRateLimited(any(), any(Integer.class))).thenReturn(false);
-
-        // Concurrency is equal
-        when(valueOperations.get("concurrency:key1")).thenReturn("1");
-        when(valueOperations.get("concurrency:key2")).thenReturn("1");
-
-        // key1 has 90% remaining capacity, key2 has 50% remaining capacity
-        when(rateLimitingService.getRemainingRpm(key1)).thenReturn(90);
-        when(rateLimitingService.getRemainingTpm(key1)).thenReturn(90000);
-
-        when(rateLimitingService.getRemainingRpm(key2)).thenReturn(50);
-        when(rateLimitingService.getRemainingTpm(key2)).thenReturn(50000);
 
         Optional<ApiKey> selected = schedulerService.selectKey("openai", "gpt-4o", 100);
 
         assertTrue(selected.isPresent());
-        assertEquals("key1", selected.get().getId()); // key1 has more remaining capacity (90% > 50%)
+        assertEquals("key2", selected.get().getId()); // key1 in cooldown, key2 selected
     }
 
     @Test
     void testSelectKey_ReturnsEmptyWhenAllKeysInCooldown() {
-        ApiKey key1 = ApiKey.builder().id("key1").name("Key 1").provider("openai").active(true).build();
+        long now = System.currentTimeMillis();
+        RedisPairEntry entry1 = RedisPairEntry.builder()
+                .keyId("key1")
+                .modelId("gpt-4o")
+                .provider("openai")
+                .currentStatus("ACTIVE")
+                .cooldownUntil(now + 10000L)
+                .healthScore(1.0)
+                .build();
 
-        when(apiKeyRepository.findByProviderAndModelsContainingAndActiveTrue("openai", "gpt-4o"))
-                .thenReturn(List.of(key1));
-
-        when(cooldownService.isCooldown("key1")).thenReturn(true);
+        when(redisPairCacheService.getCandidates("openai", "gpt-4o"))
+                .thenReturn(List.of(entry1));
 
         Optional<ApiKey> selected = schedulerService.selectKey("openai", "gpt-4o", 100);
 

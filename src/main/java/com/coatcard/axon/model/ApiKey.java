@@ -26,9 +26,13 @@ public class ApiKey {
     @Indexed
     private String provider; // e.g. "openai"
 
-    private String keyValue; // The actual API key string
+    private String keyValue; // The plain text / legacy API key value
+    
+    private String apiKey; // The encrypted API key value (required by spec)
 
     private List<String> models; // Models this key can run, e.g. ["gpt-4o", "gpt-4-turbo"]
+    
+    private List<String> allowedModels; // Models this key can run (required by spec)
 
     private int limitRpm; // Requests Per Minute limit
 
@@ -37,6 +41,8 @@ public class ApiKey {
     private int cooldownDurationSeconds; // Cooldown duration after failure
 
     private boolean active;
+    
+    private ApiKeyStatus status; // ACTIVE, DISABLED (required by spec)
 
     private Map<String, Object> metadata;
 

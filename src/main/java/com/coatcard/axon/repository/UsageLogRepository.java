@@ -11,4 +11,5 @@ public interface UsageLogRepository extends MongoRepository<UsageLog, String> {
     List<UsageLog> findTop100ByOrderByTimestampDesc();
     List<UsageLog> findByModelOrderByTimestampDesc(String model);
     List<UsageLog> findByKeyIdOrderByTimestampDesc(String keyId);
+    List<UsageLog> findByTimestampBetween(java.time.Instant start, java.time.Instant end);
 }

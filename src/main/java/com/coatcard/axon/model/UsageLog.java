@@ -29,17 +29,27 @@ public class UsageLog {
 
     @Indexed
     private String model;
+    
+    private String modelId; // required by spec
 
     private int promptTokens;
 
     private int completionTokens;
 
     private long latencyMs;
+    
+    private long latency; // required by spec
 
     private String status; // "SUCCESS", "RATE_LIMIT_ERROR", "PROVIDER_ERROR", "CLIENT_ERROR"
+    
+    private boolean success; // required by spec
+    
+    private String errorCode; // required by spec
 
     private String errorMessage;
 
     @Indexed
     private Instant timestamp;
+    
+    private Instant requestTime; // required by spec
 }

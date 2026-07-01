@@ -22,10 +22,16 @@ public class AiModel {
     private String id;
 
     private String name; // e.g. "gpt-4o", "claude-3-5-sonnet"
+    
+    private String modelName; // required by spec
 
     private String provider; // e.g. "openai", "anthropic"
 
     private String displayName; // e.g. "GPT-4o"
 
     private boolean active;
+    
+    private boolean enabled; // required by spec
+    
+    private int priority; // required by spec (higher = more priority)
 }
