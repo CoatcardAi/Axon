@@ -1,5 +1,7 @@
 package com.coatcard.axon.model;
 
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -21,8 +23,10 @@ public class ApiKey {
     @Id
     private String id;
 
+    @NotBlank(message = "Friendly name is required")
     private String name;
 
+    @NotBlank(message = "Provider is required")
     @Indexed
     private String provider; // e.g. "openai"
 
@@ -30,10 +34,13 @@ public class ApiKey {
 
     private List<String> models; // Models this key can run, e.g. ["gpt-4o", "gpt-4-turbo"]
 
+    @Min(value = 0, message = "Limit RPM must be at least 0")
     private int limitRpm; // Requests Per Minute limit
 
+    @Min(value = 0, message = "Limit TPM must be at least 0")
     private int limitTpm; // Tokens Per Minute limit
 
+    @Min(value = 0, message = "Cooldown duration must be at least 0")
     private int cooldownDurationSeconds; // Cooldown duration after failure
 
     private boolean active;

@@ -8,8 +8,12 @@ import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
-@SpringBootTest
+@SpringBootTest(properties = "spring.data.redis.repositories.enabled=false")
 class AxonApplicationTests {
+
+    static {
+        AxonApplication.loadDotenv();
+    }
 
     @MockBean
     private UserRepository userRepository;
@@ -28,6 +32,9 @@ class AxonApplicationTests {
 
     @MockBean
     private RedisConnectionFactory redisConnectionFactory;
+
+    @MockBean
+    private org.springframework.data.redis.connection.ReactiveRedisConnectionFactory reactiveRedisConnectionFactory;
 
     @MockBean
     private RedisTemplate<String, Object> redisTemplate;

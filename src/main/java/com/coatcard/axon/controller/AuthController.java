@@ -42,6 +42,11 @@ public class AuthController {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
 
+    @org.springframework.beans.factory.annotation.Value("${spring.mail.username}")
+    private String mailFrom;
+
+    private final java.security.SecureRandom secureRandom = new java.security.SecureRandom();
+
     public AuthController(JwtTokenProvider tokenProvider,
                           StringRedisTemplate stringRedisTemplate,
                           UserDetailsService userDetailsService,
@@ -68,7 +73,7 @@ public class AuthController {
             ));
         }
 
-        String otp = String.format("%06d", new Random().nextInt(1000000));
+        String otp = String.format("%06d", secureRandom.nextInt(1000000));
         String otpKey = "otp:" + username;
         stringRedisTemplate.opsForValue().set(otpKey, otp, 5, TimeUnit.MINUTES);
 
@@ -102,7 +107,7 @@ public class AuthController {
                 10,
                 TimeUnit.MINUTES);
 
-        String otp = String.format("%06d", new Random().nextInt(1000000));
+        String otp = String.format("%06d", secureRandom.nextInt(1000000));
         String otpKey = "otp:" + username;
         stringRedisTemplate.opsForValue().set(otpKey, otp, 10, TimeUnit.MINUTES);
 
@@ -181,7 +186,7 @@ public class AuthController {
     private void sendOtpEmail(String to, String otp) {
         SimpleMailMessage message = new SimpleMailMessage();
         message.setTo(to);
-        message.setFrom("anandkumarshukla2709@gmail.com");
+        message.setFrom(mailFrom);
         message.setSubject("Your Axon OTP Code");
         message.setText("Your one-time password is: " + otp + "\n\nThis code expires in 5 minutes.");
         mailSender.send(message);

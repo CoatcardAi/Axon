@@ -16,57 +16,112 @@ public class RateLimitingService {
     }
 
     public boolean isRateLimited(ApiKey apiKey, int estimatedTokens) {
-        long currentMinute = System.currentTimeMillis() / 60000;
-        String rpmKey = getRpmKey(apiKey.getId(), currentMinute);
-        String tpmKey = getTpmKey(apiKey.getId(), currentMinute);
+        try {
+            long currentMinute = System.currentTimeMillis() / 60000;
+            String rpmKey = getRpmKey(apiKey.getId(), currentMinute);
+            String tpmKey = getTpmKey(apiKey.getId(), currentMinute);
 
-        String rpmVal = stringRedisTemplate.opsForValue().get(rpmKey);
-        String tpmVal = stringRedisTemplate.opsForValue().get(tpmKey);
+            String rpmVal = stringRedisTemplate.opsForValue().get(rpmKey);
+            String tpmVal = stringRedisTemplate.opsForValue().get(tpmKey);
 
-        int currentRpm = rpmVal != null ? Integer.parseInt(rpmVal) : 0;
-        int currentTpm = tpmVal != null ? Integer.parseInt(tpmVal) : 0;
+            int currentRpm = rpmVal != null ? Integer.parseInt(rpmVal) : 0;
+            int currentTpm = tpmVal != null ? Integer.parseInt(tpmVal) : 0;
 
-        if (apiKey.getLimitRpm() > 0 && currentRpm >= apiKey.getLimitRpm()) {
-            return true;
+            if (apiKey.getLimitRpm() > 0 && currentRpm >= apiKey.getLimitRpm()) {
+                return true;
+            }
+
+            if (apiKey.getLimitTpm() > 0 && (currentTpm + estimatedTokens) > apiKey.getLimitTpm()) {
+                return true;
+            }
+
+            return false;
+        } catch (Exception e) {
+            System.err.println("Redis rate limit check failed: " + e.getMessage());
+            return false;
         }
-
-        if (apiKey.getLimitTpm() > 0 && (currentTpm + estimatedTokens) > apiKey.getLimitTpm()) {
-            return true;
-        }
-
-        return false;
     }
 
     public void incrementUsage(String keyId, int tokens) {
-        long currentMinute = System.currentTimeMillis() / 60000;
-        String rpmKey = getRpmKey(keyId, currentMinute);
-        String tpmKey = getTpmKey(keyId, currentMinute);
+        try {
+            long currentMinute = System.currentTimeMillis() / 60000;
+            String rpmKey = getRpmKey(keyId, currentMinute);
+            String tpmKey = getTpmKey(keyId, currentMinute);
 
-        Long rpm = stringRedisTemplate.opsForValue().increment(rpmKey, 1);
-        if (rpm != null && rpm == 1) {
-            stringRedisTemplate.expire(rpmKey, 120, TimeUnit.SECONDS);
-        }
+            Long rpm = stringRedisTemplate.opsForValue().increment(rpmKey, 1);
+            Long rpmTtl = stringRedisTemplate.getExpire(rpmKey, TimeUnit.SECONDS);
+            if (rpmTtl == null || rpmTtl == -1) {
+                stringRedisTemplate.expire(rpmKey, 120, TimeUnit.SECONDS);
+            }
 
-        Long tpm = stringRedisTemplate.opsForValue().increment(tpmKey, tokens);
-        if (tpm != null && tpm == tokens) {
-            stringRedisTemplate.expire(tpmKey, 120, TimeUnit.SECONDS);
+            Long tpm = stringRedisTemplate.opsForValue().increment(tpmKey, tokens);
+            Long tpmTtl = stringRedisTemplate.getExpire(tpmKey, TimeUnit.SECONDS);
+            if (tpmTtl == null || tpmTtl == -1) {
+                stringRedisTemplate.expire(tpmKey, 120, TimeUnit.SECONDS);
+            }
+        } catch (Exception e) {
+            System.err.println("Redis incrementUsage failed: " + e.getMessage());
         }
     }
 
     public int getRemainingRpm(ApiKey apiKey) {
-        long currentMinute = System.currentTimeMillis() / 60000;
-        String rpmKey = getRpmKey(apiKey.getId(), currentMinute);
-        String rpmVal = stringRedisTemplate.opsForValue().get(rpmKey);
-        int currentRpm = rpmVal != null ? Integer.parseInt(rpmVal) : 0;
-        return Math.max(0, apiKey.getLimitRpm() - currentRpm);
+        try {
+            long currentMinute = System.currentTimeMillis() / 60000;
+            String rpmKey = getRpmKey(apiKey.getId(), currentMinute);
+            String rpmVal = stringRedisTemplate.opsForValue().get(rpmKey);
+            int currentRpm = rpmVal != null ? Integer.parseInt(rpmVal) : 0;
+            return Math.max(0, apiKey.getLimitRpm() - currentRpm);
+        } catch (Exception e) {
+            System.err.println("Redis getRemainingRpm failed: " + e.getMessage());
+            return apiKey.getLimitRpm();
+        }
     }
 
     public int getRemainingTpm(ApiKey apiKey) {
-        long currentMinute = System.currentTimeMillis() / 60000;
-        String tpmKey = getTpmKey(apiKey.getId(), currentMinute);
-        String tpmVal = stringRedisTemplate.opsForValue().get(tpmKey);
-        int currentTpm = tpmVal != null ? Integer.parseInt(tpmVal) : 0;
-        return Math.max(0, apiKey.getLimitTpm() - currentTpm);
+        try {
+            long currentMinute = System.currentTimeMillis() / 60000;
+            String tpmKey = getTpmKey(apiKey.getId(), currentMinute);
+            String tpmVal = stringRedisTemplate.opsForValue().get(tpmKey);
+            int currentTpm = tpmVal != null ? Integer.parseInt(tpmVal) : 0;
+            return Math.max(0, apiKey.getLimitTpm() - currentTpm);
+        } catch (Exception e) {
+            System.err.println("Redis getRemainingTpm failed: " + e.getMessage());
+            return apiKey.getLimitTpm();
+        }
+    }
+
+    public void adjustTpmUsage(String keyId, int diff) {
+        if (diff == 0) return;
+        try {
+            long currentMinute = System.currentTimeMillis() / 60000;
+            String tpmKey = getTpmKey(keyId, currentMinute);
+            Long tpm = stringRedisTemplate.opsForValue().increment(tpmKey, diff);
+            Long tpmTtl = stringRedisTemplate.getExpire(tpmKey, TimeUnit.SECONDS);
+            if (tpmTtl == null || tpmTtl == -1) {
+                stringRedisTemplate.expire(tpmKey, 120, TimeUnit.SECONDS);
+            }
+        } catch (Exception e) {
+            System.err.println("Redis adjustTpmUsage failed: " + e.getMessage());
+        }
+    }
+
+    public void refundUsage(String keyId, int estimatedTokens) {
+        try {
+            long currentMinute = System.currentTimeMillis() / 60000;
+            String rpmKey = getRpmKey(keyId, currentMinute);
+            String tpmKey = getTpmKey(keyId, currentMinute);
+
+            Long rpm = stringRedisTemplate.opsForValue().increment(rpmKey, -1);
+            if (rpm != null && rpm < 0) {
+                stringRedisTemplate.opsForValue().set(rpmKey, "0");
+            }
+            Long tpm = stringRedisTemplate.opsForValue().increment(tpmKey, -estimatedTokens);
+            if (tpm != null && tpm < 0) {
+                stringRedisTemplate.opsForValue().set(tpmKey, "0");
+            }
+        } catch (Exception e) {
+            System.err.println("Redis refundUsage failed: " + e.getMessage());
+        }
     }
 
     private String getRpmKey(String keyId, long minute) {

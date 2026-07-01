@@ -11,6 +11,7 @@ import com.coatcard.axon.service.CooldownService;
 import com.coatcard.axon.service.ModelService;
 import com.coatcard.axon.service.RateLimitingService;
 import com.coatcard.axon.service.SchedulerService;
+import jakarta.validation.Valid;
 import org.springframework.beans.BeanUtils;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -63,13 +64,13 @@ public class AdminController {
     }
 
     @PostMapping("/keys")
-    public ResponseEntity<ApiKey> createKey(@RequestBody ApiKey apiKey) {
+    public ResponseEntity<ApiKey> createKey(@Valid @RequestBody ApiKey apiKey) {
         ApiKey created = apiKeyService.createKey(apiKey);
         return ResponseEntity.ok(maskKeyCopy(created));
     }
 
     @PutMapping("/keys/{id}")
-    public ResponseEntity<ApiKey> updateKey(@PathVariable String id, @RequestBody ApiKey apiKeyDetails) {
+    public ResponseEntity<ApiKey> updateKey(@PathVariable String id, @Valid @RequestBody ApiKey apiKeyDetails) {
         try {
             ApiKey updated = apiKeyService.updateKey(id, apiKeyDetails);
             return ResponseEntity.ok(maskKeyCopy(updated));
@@ -115,12 +116,12 @@ public class AdminController {
     }
 
     @PostMapping("/models")
-    public ResponseEntity<AiModel> createModel(@RequestBody AiModel model) {
+    public ResponseEntity<AiModel> createModel(@Valid @RequestBody AiModel model) {
         return ResponseEntity.ok(modelService.createModel(model));
     }
 
     @PutMapping("/models/{id}")
-    public ResponseEntity<AiModel> updateModel(@PathVariable String id, @RequestBody AiModel modelDetails) {
+    public ResponseEntity<AiModel> updateModel(@PathVariable String id, @Valid @RequestBody AiModel modelDetails) {
         try {
             return ResponseEntity.ok(modelService.updateModel(id, modelDetails));
         } catch (IllegalArgumentException e) {

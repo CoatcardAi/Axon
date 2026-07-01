@@ -41,10 +41,15 @@ public class DatabaseSeeder implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
-        seedUsers();
-        seedProviders();
-        seedModels();
-        seedApiKeys();
+        try {
+            seedUsers();
+            seedProviders();
+            seedModels();
+            seedApiKeys();
+        } catch (Exception e) {
+            System.err.println("Database seeding failed: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
     private void seedUsers() {

@@ -47,8 +47,9 @@ public class ProxyService {
             ApiKey apiKey = keyOpt.get();
             String keyId = apiKey.getId();
 
-            // Increment active connections
+            // Increment active connections and pre-reserve rate limits
             schedulerService.incrementConcurrency(keyId);
+            rateLimitingService.incrementUsage(keyId, estimatedTokens);
             long startTime = System.currentTimeMillis();
 
             try {
@@ -60,8 +61,9 @@ public class ProxyService {
                 int completionTokens = responseText.length() / 4 + 10;
                 int totalTokens = promptTokens + completionTokens;
 
-                // Update rate limits in Redis
-                rateLimitingService.incrementUsage(keyId, totalTokens);
+                // Adjust rate limits in Redis based on actual usage
+                int diff = totalTokens - estimatedTokens;
+                rateLimitingService.adjustTpmUsage(keyId, diff);
 
                 // Log success in DB
                 UsageLog log = UsageLog.builder()
@@ -96,6 +98,7 @@ public class ProxyService {
                 // Client error (400 Bad Request) - do not trigger cooldown, do not retry
                 long latency = System.currentTimeMillis() - startTime;
                 schedulerService.decrementConcurrency(keyId);
+                rateLimitingService.refundUsage(keyId, estimatedTokens);
 
                 UsageLog log = UsageLog.builder()
                         .keyId(keyId)
@@ -117,6 +120,7 @@ public class ProxyService {
                 // Failover trigger (Rate limit 429 or Provider 5xx error)
                 long latency = System.currentTimeMillis() - startTime;
                 schedulerService.decrementConcurrency(keyId);
+                rateLimitingService.refundUsage(keyId, estimatedTokens);
 
                 String errorType = "PROVIDER_ERROR";
                 String reason = e.getMessage();
