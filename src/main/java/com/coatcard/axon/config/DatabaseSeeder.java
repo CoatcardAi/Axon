@@ -8,12 +8,14 @@ import com.coatcard.axon.repository.AiModelRepository;
 import com.coatcard.axon.repository.ApiKeyRepository;
 import com.coatcard.axon.repository.ProviderRepository;
 import com.coatcard.axon.repository.UserRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -21,11 +23,27 @@ import java.util.Set;
 @Component
 public class DatabaseSeeder implements CommandLineRunner {
 
+    private static final String GEMINI_PROVIDER = "gemini";
+
+    private static final List<String> GEMINI_MODELS = List.of(
+            "gemini-3.5-flash",
+            "gemma-4-31b-it",
+            "gemini-flash-latest",
+            "gemini-2.5-flash",
+            "gemma-4-26b-a4b-it",
+            "gemini-2.5-flash-lite",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-flash-lite-latest"
+    );
+
     private final UserRepository userRepository;
     private final ProviderRepository providerRepository;
     private final AiModelRepository modelRepository;
     private final ApiKeyRepository apiKeyRepository;
     private final PasswordEncoder passwordEncoder;
+
+    @Value("${gemini.api.keys:}")
+    private String geminiApiKeys;
 
     public DatabaseSeeder(UserRepository userRepository,
                           ProviderRepository providerRepository,
@@ -53,12 +71,14 @@ public class DatabaseSeeder implements CommandLineRunner {
     }
 
     private void seedUsers() {
-        // Seed or Promote Admin User
-        java.util.Optional<User> existingAdmin = userRepository.findByUsername("kumaranand43856@gmail.com");
+        java.util.Optional<User> existingAdmin =
+                userRepository.findByUsername("kumaranand43856@gmail.com");
+
         if (existingAdmin.isPresent()) {
             User admin = existingAdmin.get();
+
             if (!admin.getRoles().contains("ROLE_ADMIN")) {
-                admin.setRoles(java.util.Set.of("ROLE_ADMIN"));
+                admin.setRoles(Set.of("ROLE_ADMIN"));
                 userRepository.save(admin);
                 System.out.println("Promoted existing user kumaranand43856@gmail.com to ROLE_ADMIN");
             }
@@ -66,18 +86,21 @@ public class DatabaseSeeder implements CommandLineRunner {
             User admin = User.builder()
                     .username("kumaranand43856@gmail.com")
                     .password(passwordEncoder.encode("admin123"))
-                    .roles(java.util.Set.of("ROLE_ADMIN"))
+                    .roles(Set.of("ROLE_ADMIN"))
                     .build();
+
             userRepository.save(admin);
             System.out.println("Default admin user seeded: kumaranand43856@gmail.com / admin123");
         }
 
-        // Seed or Promote Dhriti Admin User
-        java.util.Optional<User> existingDhriti = userRepository.findByUsername("dhriti44nayyar@gmail.com");
+        java.util.Optional<User> existingDhriti =
+                userRepository.findByUsername("dhriti44nayyar@gmail.com");
+
         if (existingDhriti.isPresent()) {
             User admin = existingDhriti.get();
+
             if (!admin.getRoles().contains("ROLE_ADMIN")) {
-                admin.setRoles(java.util.Set.of("ROLE_ADMIN"));
+                admin.setRoles(Set.of("ROLE_ADMIN"));
                 userRepository.save(admin);
                 System.out.println("Promoted existing user dhriti44nayyar@gmail.com to ROLE_ADMIN");
             }
@@ -85,108 +108,94 @@ public class DatabaseSeeder implements CommandLineRunner {
             User admin = User.builder()
                     .username("dhriti44nayyar@gmail.com")
                     .password(passwordEncoder.encode("admin123"))
-                    .roles(java.util.Set.of("ROLE_ADMIN"))
+                    .roles(Set.of("ROLE_ADMIN"))
                     .build();
+
             userRepository.save(admin);
             System.out.println("Dhriti admin user seeded: dhriti44nayyar@gmail.com / admin123");
         }
 
-        // Seed Client User
         if (userRepository.findByUsername("client@axon.com").isEmpty()) {
             User client = User.builder()
                     .username("client@axon.com")
                     .password(passwordEncoder.encode("client123"))
                     .roles(Set.of("ROLE_CLIENT"))
                     .build();
+
             userRepository.save(client);
             System.out.println("Default client user seeded: client@axon.com / client123");
         }
     }
 
     private void seedProviders() {
-        if (providerRepository.count() == 0) {
-            providerRepository.save(Provider.builder().name("openai").displayName("OpenAI").active(true).build());
-            providerRepository.save(Provider.builder().name("anthropic").displayName("Anthropic").active(true).build());
-            providerRepository.save(Provider.builder().name("gemini").displayName("Google Gemini").active(true).build());
-            providerRepository.save(Provider.builder().name("cohere").displayName("Cohere").active(true).build());
-            System.out.println("Default AI Providers seeded.");
-        }
+        providerRepository.deleteAll();
+
+        Provider geminiProvider = Provider.builder()
+                .name(GEMINI_PROVIDER)
+                .displayName("Google Gemini")
+                .active(true)
+                .build();
+
+        providerRepository.save(geminiProvider);
+
+        System.out.println("Gemini provider seeded.");
     }
 
     private void seedModels() {
-        if (modelRepository.count() == 0) {
-            // OpenAI Models
-            modelRepository.save(AiModel.builder().provider("openai").name("gpt-4o").displayName("GPT-4o").active(true).build());
-            modelRepository.save(AiModel.builder().provider("openai").name("gpt-4-turbo").displayName("GPT-4 Turbo").active(true).build());
-            modelRepository.save(AiModel.builder().provider("openai").name("gpt-3.5-turbo").displayName("GPT-3.5 Turbo").active(true).build());
+        modelRepository.deleteAll();
 
-            // Anthropic Models
-            modelRepository.save(AiModel.builder().provider("anthropic").name("claude-3-5-sonnet").displayName("Claude 3.5 Sonnet").active(true).build());
-            modelRepository.save(AiModel.builder().provider("anthropic").name("claude-3-opus").displayName("Claude 3 Opus").active(true).build());
+        List<AiModel> models = GEMINI_MODELS.stream()
+                .map(modelName -> AiModel.builder()
+                        .provider(GEMINI_PROVIDER)
+                        .name(modelName)
+                        .displayName(modelName)
+                        .active(true)
+                        .build())
+                .toList();
 
-            // Gemini Models
-            modelRepository.save(AiModel.builder().provider("gemini").name("gemini-1.5-pro").displayName("Gemini 1.5 Pro").active(true).build());
-            modelRepository.save(AiModel.builder().provider("gemini").name("gemini-1.5-flash").displayName("Gemini 1.5 Flash").active(true).build());
+        modelRepository.saveAll(models);
 
-            System.out.println("Default AI Models seeded.");
-        }
+        System.out.println("Gemini-only AI models seeded: " + models.size());
     }
 
     private void seedApiKeys() {
-        if (apiKeyRepository.count() == 0) {
-            List<ApiKey> defaultKeys = new ArrayList<>();
+        apiKeyRepository.deleteAll();
 
-            // Seed mock keys for testing routing and load balancing (need 100+ keys capability, let's seed 15 active keys initially)
-            for (int i = 1; i <= 5; i++) {
-                defaultKeys.add(ApiKey.builder()
-                        .name("OpenAI Production Key " + i)
-                        .provider("openai")
-                        .keyValue("sk-mock-openai-key-prod-00" + i + "-xyz123abc456")
-                        .models(List.of("gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"))
-                        .limitRpm(60) // 1 request per second average
-                        .limitTpm(100000)
-                        .cooldownDurationSeconds(15)
-                        .active(true)
-                        .metadata(Map.of("tier", "enterprise", "instance", i))
-                        .createdAt(Instant.now())
-                        .updatedAt(Instant.now())
-                        .build());
-            }
-
-            for (int i = 1; i <= 5; i++) {
-                defaultKeys.add(ApiKey.builder()
-                        .name("Anthropic Production Key " + i)
-                        .provider("anthropic")
-                        .keyValue("sk-ant-mock-key-prod-00" + i + "-xyz123abc456")
-                        .models(List.of("claude-3-5-sonnet", "claude-3-opus"))
-                        .limitRpm(30)
-                        .limitTpm(50000)
-                        .cooldownDurationSeconds(20)
-                        .active(true)
-                        .metadata(Map.of("tier", "pay-as-you-go", "instance", i))
-                        .createdAt(Instant.now())
-                        .updatedAt(Instant.now())
-                        .build());
-            }
-
-            for (int i = 1; i <= 5; i++) {
-                defaultKeys.add(ApiKey.builder()
-                        .name("Gemini Production Key " + i)
-                        .provider("gemini")
-                        .keyValue("gemini-mock-key-prod-00" + i + "-xyz123abc456")
-                        .models(List.of("gemini-1.5-pro", "gemini-1.5-flash"))
-                        .limitRpm(100)
-                        .limitTpm(200000)
-                        .cooldownDurationSeconds(10)
-                        .active(true)
-                        .metadata(Map.of("tier", "free-tier", "instance", i))
-                        .createdAt(Instant.now())
-                        .updatedAt(Instant.now())
-                        .build());
-            }
-
-            apiKeyRepository.saveAll(defaultKeys);
-            System.out.println("Sample API Keys seeded for OpenAI, Anthropic, and Gemini (15 keys total).");
+        if (geminiApiKeys == null || geminiApiKeys.isBlank()) {
+            System.out.println("No Gemini API keys found. Please configure gemini.api.keys.");
+            return;
         }
+
+        List<String> keys = Arrays.stream(geminiApiKeys.split(","))
+                .map(String::trim)
+                .filter(key -> !key.isBlank())
+                .toList();
+
+        List<ApiKey> apiKeys = new ArrayList<>();
+
+        for (int i = 0; i < keys.size(); i++) {
+            ApiKey apiKey = ApiKey.builder()
+                    .name("Gemini API Key " + (i + 1))
+                    .provider(GEMINI_PROVIDER)
+                    .keyValue(keys.get(i))
+                    .models(GEMINI_MODELS)
+                    .limitRpm(100)
+                    .limitTpm(200000)
+                    .cooldownDurationSeconds(10)
+                    .active(true)
+                    .metadata(Map.of(
+                            "tier", "gemini",
+                            "instance", i + 1
+                    ))
+                    .createdAt(Instant.now())
+                    .updatedAt(Instant.now())
+                    .build();
+
+            apiKeys.add(apiKey);
+        }
+
+        apiKeyRepository.saveAll(apiKeys);
+
+        System.out.println("Gemini API keys seeded: " + apiKeys.size());
     }
 }
