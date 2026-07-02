@@ -24,5 +24,9 @@ public class User {
 
     private String password;
 
+    private Integer age;
+
+    private String gender;
+
     private Set<String> roles; // e.g. {"ROLE_ADMIN"}, {"ROLE_CLIENT"}
 }
