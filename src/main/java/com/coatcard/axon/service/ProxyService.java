@@ -92,23 +92,130 @@ public class ProxyService {
             }
         }
 
-        // 3. Iterate through fallback sequence until a model and API key succeeds
-        KeysExhaustedException lastException = null;
-        for (String currentModel : tryOrder) {
+        // 3. Flat routing loop: try up to 20 turns
+        int globalAttempts = 0;
+        int maxGlobalAttempts = 20;
+        int currentModelIdx = 0;
+        
+        // Track excluded keys per model to avoid selecting them again
+        java.util.Map<String, List<String>> excludedKeysMap = new java.util.HashMap<>();
+        for (String m : tryOrder) {
+            excludedKeysMap.put(m, new ArrayList<>());
+        }
+
+        while (globalAttempts < maxGlobalAttempts && currentModelIdx < tryOrder.size()) {
+            globalAttempts++;
+            String currentModel = tryOrder.get(currentModelIdx);
+            timeline.add(String.format("Turn %d: Trying model '%s'. Excluded keys on this model: %s", 
+                globalAttempts, currentModel, excludedKeysMap.get(currentModel)));
+
+            // Select key
+            Optional<ApiKey> keyOpt;
+            synchronized (schedulerService) {
+                keyOpt = schedulerService.selectKey("gemini", currentModel, estimatedTokens, excludedKeysMap.get(currentModel));
+                if (keyOpt.isPresent()) {
+                    schedulerService.incrementConcurrency(keyOpt.get().getId());
+                    rateLimitingService.incrementUsage(keyOpt.get().getId(), estimatedTokens);
+                    timeline.add(String.format("Selection: Selected key '%s' (%s) for model '%s'.", 
+                        keyOpt.get().getName(), keyOpt.get().getId(), currentModel));
+                }
+            }
+
+            if (keyOpt.isEmpty()) {
+                timeline.add(String.format("Exhausted: No eligible keys found for model '%s'. Switching to next model in fallback chain.", currentModel));
+                currentModelIdx++;
+                continue;
+            }
+
+            ApiKey apiKey = keyOpt.get();
+            String keyId = apiKey.getId();
+            long startTime = System.currentTimeMillis();
+
             try {
-                timeline.add(String.format("Chatbot Routing: Trying model candidate '%s'...", currentModel));
-                ProxyResponse response = executePromptInternal("gemini", currentModel, prompt, estimatedTokens, timeline);
-                
-                // Add chatbot timeline entries
-                response.setRoutingTimeline(timeline);
-                return response;
-            } catch (KeysExhaustedException e) {
-                timeline.add(String.format("Model Fallback: Keys exhausted for model '%s'. Falling back to next available model.", currentModel));
-                lastException = e;
+                // Call API
+                String responseText = simulateApiCall(apiKey, currentModel, prompt);
+                long latency = System.currentTimeMillis() - startTime;
+
+                int promptTokens = estimatedTokens;
+                int completionTokens = responseText.length() / 4 + 10;
+                int totalTokens = promptTokens + completionTokens;
+
+                int diff = totalTokens - estimatedTokens;
+                rateLimitingService.adjustTpmUsage(keyId, diff);
+
+                timeline.add(String.format("Success: Turn %d succeeded using key '%s' and model '%s' in %dms.", 
+                    globalAttempts, apiKey.getName(), currentModel, latency));
+
+                // Log success
+                retryEngineService.reportResult(keyId, currentModel, true, 200, latency, null, promptTokens, completionTokens, prompt, responseText);
+                schedulerService.decrementConcurrency(keyId);
+
+                return ProxyResponse.builder()
+                        .selectedKeyId(keyId)
+                        .selectedKeyName(apiKey.getName())
+                        .provider("gemini")
+                        .model(currentModel)
+                        .responseText(responseText)
+                        .promptTokens(promptTokens)
+                        .completionTokens(completionTokens)
+                        .latencyMs(latency)
+                        .attempts(globalAttempts)
+                        .routingTimeline(timeline)
+                        .build();
+
+            } catch (IllegalArgumentException e) {
+                // Client error - do not retry, do not failover
+                long latency = System.currentTimeMillis() - startTime;
+                schedulerService.decrementConcurrency(keyId);
+                rateLimitingService.refundUsage(keyId, estimatedTokens);
+                timeline.add(String.format("Client Error: Turn %d rejected with 400 Bad Request (%s). Aborting.", globalAttempts, e.getMessage()));
+                retryEngineService.reportResult(keyId, currentModel, false, 400, latency, e.getMessage(), estimatedTokens, 0, prompt, null);
+                throw e;
+
+            } catch (Exception e) {
+                // Failover trigger
+                long latency = System.currentTimeMillis() - startTime;
+                schedulerService.decrementConcurrency(keyId);
+                rateLimitingService.refundUsage(keyId, estimatedTokens);
+
+                int statusCode = 500;
+                String reason = e.getMessage();
+                if (reason != null && reason.contains("RATE_LIMIT_ERROR")) {
+                    statusCode = 429;
+                } else if (reason != null && reason.contains("UNAUTHORIZED_ERROR")) {
+                    statusCode = 401;
+                } else if (reason != null && reason.contains("FORBIDDEN_ERROR")) {
+                    statusCode = 403;
+                } else if (reason != null && reason.contains("TIMEOUT_ERROR")) {
+                    statusCode = 504;
+                } else if (reason != null && reason.contains("PROVIDER_ERROR")) {
+                    statusCode = 503;
+                }
+
+                timeline.add(String.format("Failure: Key '%s' failed on model '%s' with status %d (%s) in %dms.", 
+                    apiKey.getName(), currentModel, statusCode, reason, latency));
+
+                // Report failure
+                retryEngineService.reportResult(keyId, currentModel, false, statusCode, latency, reason, estimatedTokens, 0, prompt, null);
+
+                // Exclude key for future selection on this model
+                excludedKeysMap.get(currentModel).add(keyId);
+
+                // Determine routing action based on error code:
+                if (statusCode == 503 || statusCode == 500) {
+                    // 503 / 500 provider error -> fallback to next model immediately
+                    timeline.add(String.format("Error %d indicates provider failure. Changing model immediately.", statusCode));
+                    currentModelIdx++;
+                } else {
+                    // 429 rate limit or other errors -> retry with another key on same model
+                    timeline.add(String.format("Error %d. Retrying other keys for model '%s'.", statusCode, currentModel));
+                }
             }
         }
 
-        throw new KeysExhaustedException("Chatbot Exhausted: No active keys available for any Gemini models in the fallback chain. Last error: " + (lastException != null ? lastException.getMessage() : "none"));
+        String finalErr = String.format("Chatbot Exhausted: Failed to get result after %d turns across fallback chain.", globalAttempts);
+        timeline.add(finalErr);
+        throw new KeysExhaustedException(finalErr);
     }
 
     private ProxyResponse executePromptInternal(String provider, String model, String prompt, int estimatedTokens, List<String> timeline) {
