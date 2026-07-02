@@ -29,6 +29,13 @@ public class ModelService {
     }
 
     public AiModel createModel(AiModel model) {
+        if (model.getId() != null && model.getId().isBlank()) {
+            model.setId(null);
+        }
+        if (model.getModelName() == null || model.getModelName().isBlank()) {
+            model.setModelName(model.getName());
+        }
+        model.setEnabled(model.isActive());
         return modelRepository.save(model);
     }
 
@@ -37,9 +44,12 @@ public class ModelService {
                 .orElseThrow(() -> new IllegalArgumentException("Model not found with id: " + id));
 
         existing.setName(details.getName());
+        existing.setModelName(details.getName()); // Sync modelName with name
         existing.setProvider(details.getProvider());
         existing.setDisplayName(details.getDisplayName());
         existing.setActive(details.isActive());
+        existing.setEnabled(details.isActive()); // Sync enabled with active
+        existing.setPriority(details.getPriority());
 
         return modelRepository.save(existing);
     }

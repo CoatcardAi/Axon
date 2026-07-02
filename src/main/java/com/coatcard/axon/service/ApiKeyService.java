@@ -35,6 +35,9 @@ public class ApiKeyService {
     }
 
     public ApiKey createKey(ApiKey apiKey) {
+        if (apiKey.getId() != null && apiKey.getId().isBlank()) {
+            apiKey.setId(null);
+        }
         syncFields(apiKey);
         apiKey.setCreatedAt(Instant.now());
         apiKey.setUpdatedAt(Instant.now());

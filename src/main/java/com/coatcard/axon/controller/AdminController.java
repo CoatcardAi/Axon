@@ -155,6 +155,7 @@ public class AdminController {
     @DeleteMapping("/models/{id}")
     public ResponseEntity<Void> deleteModel(@PathVariable String id) {
         modelService.deleteModel(id);
+        mappingRepository.deleteByModelId(id);
         tryWarmupCache();
         return ResponseEntity.noContent().build();
     }
