@@ -11,6 +11,12 @@ import com.coatcard.axon.service.CooldownService;
 import com.coatcard.axon.service.ModelService;
 import com.coatcard.axon.service.RateLimitingService;
 import com.coatcard.axon.service.SchedulerService;
+import com.coatcard.axon.service.SchedulerService;
+import com.coatcard.axon.service.RedisPairCacheService;
+import com.coatcard.axon.repository.KeyModelMappingRepository;
+import com.coatcard.axon.model.KeyModelMapping;
+import com.coatcard.axon.redis.RedisPairEntry;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import jakarta.validation.Valid;
 import org.springframework.beans.BeanUtils;
 import org.springframework.http.ResponseEntity;
@@ -30,19 +36,28 @@ public class AdminController {
     private final RateLimitingService rateLimitingService;
     private final SchedulerService schedulerService;
     private final UsageLogRepository usageLogRepository;
+    private final KeyModelMappingRepository mappingRepository;
+    private final RedisPairCacheService redisPairCacheService;
+    private final StringRedisTemplate stringRedisTemplate;
 
     public AdminController(ApiKeyService apiKeyService,
                            ModelService modelService,
                            CooldownService cooldownService,
                            RateLimitingService rateLimitingService,
                            SchedulerService schedulerService,
-                           UsageLogRepository usageLogRepository) {
+                           UsageLogRepository usageLogRepository,
+                           KeyModelMappingRepository mappingRepository,
+                           RedisPairCacheService redisPairCacheService,
+                           StringRedisTemplate stringRedisTemplate) {
         this.apiKeyService = apiKeyService;
         this.modelService = modelService;
         this.cooldownService = cooldownService;
         this.rateLimitingService = rateLimitingService;
         this.schedulerService = schedulerService;
         this.usageLogRepository = usageLogRepository;
+        this.mappingRepository = mappingRepository;
+        this.redisPairCacheService = redisPairCacheService;
+        this.stringRedisTemplate = stringRedisTemplate;
     }
 
     // --- Key Management ---
@@ -66,6 +81,7 @@ public class AdminController {
     @PostMapping("/keys")
     public ResponseEntity<ApiKey> createKey(@Valid @RequestBody ApiKey apiKey) {
         ApiKey created = apiKeyService.createKey(apiKey);
+        tryWarmupCache();
         return ResponseEntity.ok(maskKeyCopy(created));
     }
 
@@ -73,6 +89,7 @@ public class AdminController {
     public ResponseEntity<ApiKey> updateKey(@PathVariable String id, @Valid @RequestBody ApiKey apiKeyDetails) {
         try {
             ApiKey updated = apiKeyService.updateKey(id, apiKeyDetails);
+            tryWarmupCache();
             return ResponseEntity.ok(maskKeyCopy(updated));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.notFound().build();
@@ -82,6 +99,7 @@ public class AdminController {
     @DeleteMapping("/keys/{id}")
     public ResponseEntity<Void> deleteKey(@PathVariable String id) {
         apiKeyService.deleteKey(id);
+        tryWarmupCache();
         return ResponseEntity.noContent().build();
     }
 
@@ -117,13 +135,17 @@ public class AdminController {
 
     @PostMapping("/models")
     public ResponseEntity<AiModel> createModel(@Valid @RequestBody AiModel model) {
-        return ResponseEntity.ok(modelService.createModel(model));
+        AiModel created = modelService.createModel(model);
+        tryWarmupCache();
+        return ResponseEntity.ok(created);
     }
 
     @PutMapping("/models/{id}")
     public ResponseEntity<AiModel> updateModel(@PathVariable String id, @Valid @RequestBody AiModel modelDetails) {
         try {
-            return ResponseEntity.ok(modelService.updateModel(id, modelDetails));
+            AiModel updated = modelService.updateModel(id, modelDetails);
+            tryWarmupCache();
+            return ResponseEntity.ok(updated);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.notFound().build();
         }
@@ -132,6 +154,7 @@ public class AdminController {
     @DeleteMapping("/models/{id}")
     public ResponseEntity<Void> deleteModel(@PathVariable String id) {
         modelService.deleteModel(id);
+        tryWarmupCache();
         return ResponseEntity.noContent().build();
     }
 
@@ -147,6 +170,32 @@ public class AdminController {
         int inactiveKeys = 0;
 
         List<KeyHealthDetail> details = new ArrayList<>();
+        List<RedisPairEntry> allPairs = new ArrayList<>();
+        String redisStatus = "CONNECTED";
+        int redisCachedPairsCount = 0;
+
+        try {
+            allPairs = redisPairCacheService.getAllPairs();
+            redisCachedPairsCount = allPairs.size();
+            String ping = stringRedisTemplate.getConnectionFactory().getConnection().ping();
+            if (!"PONG".equalsIgnoreCase(ping)) {
+                redisStatus = "DISCONNECTED";
+            }
+        } catch (Exception e) {
+            redisStatus = "DISCONNECTED";
+        }
+
+        String mongoStatus = "CONNECTED";
+        String mongoSyncStatus = "SYNCHRONIZED";
+        try {
+            long keysInDb = allKeys.size();
+            if (keysInDb > 0 && redisCachedPairsCount == 0 && "CONNECTED".equals(redisStatus)) {
+                mongoSyncStatus = "OUT_OF_SYNC";
+            }
+        } catch (Exception e) {
+            mongoStatus = "DISCONNECTED";
+            mongoSyncStatus = "UNKNOWN";
+        }
 
         for (ApiKey key : allKeys) {
             boolean inCooldown = cooldownService.isCooldown(key.getId());
@@ -162,6 +211,16 @@ public class AdminController {
                 activeKeys++;
             }
 
+            final String kid = key.getId();
+            List<RedisPairEntry> keyPairs = allPairs.stream()
+                    .filter(p -> p.getKeyId().equals(kid))
+                    .collect(Collectors.toList());
+
+            int successCount = keyPairs.stream().mapToInt(RedisPairEntry::getSuccessCount).sum();
+            int failureCount = keyPairs.stream().mapToInt(RedisPairEntry::getFailureCount).sum();
+            long lastUsed = keyPairs.stream().mapToLong(RedisPairEntry::getLastUsed).max().orElse(0L);
+            double avgHealthScore = keyPairs.isEmpty() ? 1.0 : keyPairs.stream().mapToDouble(RedisPairEntry::getHealthScore).average().orElse(1.0);
+
             details.add(KeyHealthDetail.builder()
                     .id(key.getId())
                     .name(key.getName())
@@ -172,6 +231,10 @@ public class AdminController {
                     .cooldownReason(inCooldown ? cooldownService.getCooldownReason(key.getId()) : null)
                     .remainingRpm(remainingRpm)
                     .remainingTpm(remainingTpm)
+                    .healthScore(avgHealthScore)
+                    .successCount(successCount)
+                    .failureCount(failureCount)
+                    .lastUsed(lastUsed)
                     .build());
         }
 
@@ -181,6 +244,10 @@ public class AdminController {
                 .cooldownKeys(cooldownKeys)
                 .inactiveKeys(inactiveKeys)
                 .keyHealths(details)
+                .redisStatus(redisStatus)
+                .redisCachedPairsCount(redisCachedPairsCount)
+                .mongoStatus(mongoStatus)
+                .mongoSyncStatus(mongoSyncStatus)
                 .build();
 
         return ResponseEntity.ok(health);
@@ -191,6 +258,60 @@ public class AdminController {
     @GetMapping("/logs")
     public ResponseEntity<List<UsageLog>> getRecentLogs() {
         return ResponseEntity.ok(usageLogRepository.findTop100ByOrderByTimestampDesc());
+    }
+
+    // --- Key-Model Mappings ---
+
+    @GetMapping("/mappings")
+    public ResponseEntity<List<KeyModelMapping>> getAllMappings() {
+        return ResponseEntity.ok(mappingRepository.findAll());
+    }
+
+    @PostMapping("/mappings")
+    public ResponseEntity<KeyModelMapping> createMapping(@Valid @RequestBody KeyModelMapping mapping) {
+        ApiKey key = apiKeyService.getKeyById(mapping.getKeyId())
+                .orElseThrow(() -> new IllegalArgumentException("API Key not found with ID: " + mapping.getKeyId()));
+
+        AiModel model = modelService.getAllModels().stream()
+                .filter(m -> m.getId().equals(mapping.getModelId()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("AI Model not found with ID: " + mapping.getModelId()));
+
+        if (!key.getProvider().equalsIgnoreCase(model.getProvider())) {
+            throw new IllegalArgumentException("Provider mismatch between API key (" + key.getProvider() + ") and model (" + model.getProvider() + ")");
+        }
+
+        // Check if mapping already exists
+        KeyModelMapping saved = mappingRepository.findByKeyIdAndModelId(mapping.getKeyId(), mapping.getModelId())
+                .orElseGet(() -> mappingRepository.save(mapping));
+
+        // Warm up Redis Cache
+        tryWarmupCache();
+
+        return ResponseEntity.ok(saved);
+    }
+
+    @DeleteMapping("/mappings/{id}")
+    public ResponseEntity<Void> deleteMapping(@PathVariable String id) {
+        mappingRepository.deleteById(id);
+        tryWarmupCache();
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/mappings")
+    public ResponseEntity<Void> deleteMappingByParams(@RequestParam String keyId, @RequestParam String modelId) {
+        mappingRepository.findByKeyIdAndModelId(keyId, modelId)
+                .ifPresent(mapping -> mappingRepository.deleteById(mapping.getId()));
+        tryWarmupCache();
+        return ResponseEntity.noContent().build();
+    }
+
+    private void tryWarmupCache() {
+        try {
+            redisPairCacheService.warmupCache();
+        } catch (Exception e) {
+            System.err.println("Warning: Redis cache warmup failed: " + e.getMessage());
+        }
     }
 
     // Helper to mask key values

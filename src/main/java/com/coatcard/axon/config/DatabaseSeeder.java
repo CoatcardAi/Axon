@@ -72,6 +72,25 @@ public class DatabaseSeeder implements CommandLineRunner {
             System.out.println("Default admin user seeded: kumaranand43856@gmail.com / admin123");
         }
 
+        // Seed or Promote Dhriti Admin User
+        java.util.Optional<User> existingDhriti = userRepository.findByUsername("dhriti44nayyar@gmail.com");
+        if (existingDhriti.isPresent()) {
+            User admin = existingDhriti.get();
+            if (!admin.getRoles().contains("ROLE_ADMIN")) {
+                admin.setRoles(java.util.Set.of("ROLE_ADMIN"));
+                userRepository.save(admin);
+                System.out.println("Promoted existing user dhriti44nayyar@gmail.com to ROLE_ADMIN");
+            }
+        } else {
+            User admin = User.builder()
+                    .username("dhriti44nayyar@gmail.com")
+                    .password(passwordEncoder.encode("admin123"))
+                    .roles(java.util.Set.of("ROLE_ADMIN"))
+                    .build();
+            userRepository.save(admin);
+            System.out.println("Dhriti admin user seeded: dhriti44nayyar@gmail.com / admin123");
+        }
+
         // Seed Client User
         if (userRepository.findByUsername("client@axon.com").isEmpty()) {
             User client = User.builder()

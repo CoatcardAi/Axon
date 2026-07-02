@@ -17,4 +17,8 @@ public class SystemHealthResponse {
     private int cooldownKeys;
     private int inactiveKeys;
     private List<KeyHealthDetail> keyHealths;
+    private String redisStatus;
+    private int redisCachedPairsCount;
+    private String mongoStatus;
+    private String mongoSyncStatus;
 }

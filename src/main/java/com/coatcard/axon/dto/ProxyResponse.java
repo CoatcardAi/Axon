@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 @Data
 @Builder
 @NoArgsConstructor
@@ -19,4 +21,5 @@ public class ProxyResponse {
     private int completionTokens;
     private long latencyMs;
     private int attempts;
+    private List<String> routingTimeline;
 }

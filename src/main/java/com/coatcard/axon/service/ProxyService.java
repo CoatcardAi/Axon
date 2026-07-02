@@ -19,37 +19,51 @@ public class ProxyService {
     private final RateLimitingService rateLimitingService;
     private final CooldownService cooldownService;
     private final UsageLogRepository usageLogRepository;
+    private final RetryEngineService retryEngineService;
 
     public ProxyService(SchedulerService schedulerService,
                         RateLimitingService rateLimitingService,
                         CooldownService cooldownService,
-                        UsageLogRepository usageLogRepository) {
+                        UsageLogRepository usageLogRepository,
+                        RetryEngineService retryEngineService) {
         this.schedulerService = schedulerService;
         this.rateLimitingService = rateLimitingService;
         this.cooldownService = cooldownService;
         this.usageLogRepository = usageLogRepository;
+        this.retryEngineService = retryEngineService;
     }
 
     public ProxyResponse executePrompt(String provider, String model, String prompt, int estimatedTokens) {
         List<String> excludedKeyIds = new ArrayList<>();
+        List<String> timeline = new ArrayList<>();
         int maxRetries = 4;
         int attempts = 0;
 
+        timeline.add(String.format("Interception: Received request for provider '%s' and model '%s'.", provider.toUpperCase(), model));
+
         while (attempts < maxRetries) {
             attempts++;
-            Optional<ApiKey> keyOpt = schedulerService.selectKey(provider, model, estimatedTokens, excludedKeyIds);
+            timeline.add(String.format("Attempt %d: Scanning active key pool...", attempts));
+
+            Optional<ApiKey> keyOpt;
+            synchronized (schedulerService) {
+                keyOpt = schedulerService.selectKey(provider, model, estimatedTokens, excludedKeyIds);
+                if (keyOpt.isPresent()) {
+                    schedulerService.incrementConcurrency(keyOpt.get().getId());
+                    rateLimitingService.incrementUsage(keyOpt.get().getId(), estimatedTokens);
+                    timeline.add(String.format("Selection: Selected key '%s' (%s) as best candidate.", keyOpt.get().getName(), keyOpt.get().getId()));
+                }
+            }
 
             if (keyOpt.isEmpty()) {
-                throw new KeysExhaustedException("No available keys for " + provider + "/" + model 
-                        + " (all keys are exhausted, rate-limited, or in cooldown).");
+                String errorMsg = String.format("Exhausted: No eligible keys found for %s/%s. Excluded: %s.", provider.toUpperCase(), model, excludedKeyIds);
+                timeline.add(errorMsg);
+                throw new KeysExhaustedException(errorMsg);
             }
 
             ApiKey apiKey = keyOpt.get();
             String keyId = apiKey.getId();
 
-            // Increment active connections and pre-reserve rate limits
-            schedulerService.incrementConcurrency(keyId);
-            rateLimitingService.incrementUsage(keyId, estimatedTokens);
             long startTime = System.currentTimeMillis();
 
             try {
@@ -65,21 +79,10 @@ public class ProxyService {
                 int diff = totalTokens - estimatedTokens;
                 rateLimitingService.adjustTpmUsage(keyId, diff);
 
-                // Log success in DB
-                UsageLog log = UsageLog.builder()
-                        .keyId(keyId)
-                        .keyName(apiKey.getName())
-                        .provider(provider)
-                        .model(model)
-                        .promptTokens(promptTokens)
-                        .completionTokens(completionTokens)
-                        .latencyMs(latency)
-                        .status("SUCCESS")
-                        .prompt(prompt)
-                        .responseText(responseText)
-                        .timestamp(Instant.now())
-                        .build();
-                usageLogRepository.save(log);
+                timeline.add(String.format("Execution: Key '%s' successfully completed prompt execution in %dms. Usage: %d prompt / %d completion tokens.", apiKey.getName(), latency, promptTokens, completionTokens));
+
+                // Log success and update Redis health metrics using RetryEngineService
+                retryEngineService.reportResult(keyId, model, true, 200, latency, null, promptTokens, completionTokens, prompt, responseText);
 
                 // Decrement active connections
                 schedulerService.decrementConcurrency(keyId);
@@ -94,6 +97,7 @@ public class ProxyService {
                         .completionTokens(completionTokens)
                         .latencyMs(latency)
                         .attempts(attempts)
+                        .routingTimeline(timeline)
                         .build();
 
             } catch (IllegalArgumentException e) {
@@ -102,20 +106,10 @@ public class ProxyService {
                 schedulerService.decrementConcurrency(keyId);
                 rateLimitingService.refundUsage(keyId, estimatedTokens);
 
-                UsageLog log = UsageLog.builder()
-                        .keyId(keyId)
-                        .keyName(apiKey.getName())
-                        .provider(provider)
-                        .model(model)
-                        .promptTokens(estimatedTokens)
-                        .completionTokens(0)
-                        .latencyMs(latency)
-                        .status("CLIENT_ERROR")
-                        .errorMessage(e.getMessage())
-                        .prompt(prompt)
-                        .timestamp(Instant.now())
-                        .build();
-                usageLogRepository.save(log);
+                timeline.add(String.format("Client Error: Request rejected with 400 Bad Request (%s). Aborting execution without retries.", e.getMessage()));
+
+                // Delegate error reporting to RetryEngineService
+                retryEngineService.reportResult(keyId, model, false, 400, latency, e.getMessage(), estimatedTokens, 0, prompt, null);
 
                 throw e;
 
@@ -125,39 +119,31 @@ public class ProxyService {
                 schedulerService.decrementConcurrency(keyId);
                 rateLimitingService.refundUsage(keyId, estimatedTokens);
 
-                String errorType = "PROVIDER_ERROR";
+                int statusCode = 500;
                 String reason = e.getMessage();
                 if ("RATE_LIMIT_ERROR".equals(reason)) {
-                    errorType = "RATE_LIMIT_ERROR";
+                    statusCode = 429;
+                } else if ("UNAUTHORIZED_ERROR".equals(reason)) {
+                    statusCode = 401;
+                } else if ("FORBIDDEN_ERROR".equals(reason)) {
+                    statusCode = 403;
+                } else if ("TIMEOUT_ERROR".equals(reason)) {
+                    statusCode = 504;
                 }
 
-                // Trigger cooldown in Redis
-                int cooldownSec = apiKey.getCooldownDurationSeconds() > 0 ? apiKey.getCooldownDurationSeconds() : 30;
-                cooldownService.triggerCooldown(keyId, errorType + ": " + reason, cooldownSec);
+                timeline.add(String.format("Failover: Key '%s' failed with status %d (%s) in %dms. Key excluded for retries.", apiKey.getName(), statusCode, reason, latency));
 
-                // Log failover attempt in DB
-                UsageLog log = UsageLog.builder()
-                        .keyId(keyId)
-                        .keyName(apiKey.getName())
-                        .provider(provider)
-                        .model(model)
-                        .promptTokens(estimatedTokens)
-                        .completionTokens(0)
-                        .latencyMs(latency)
-                        .status(errorType)
-                        .errorMessage(reason)
-                        .prompt(prompt)
-                        .timestamp(Instant.now())
-                        .build();
-                usageLogRepository.save(log);
+                // Delegate error reporting to RetryEngineService
+                retryEngineService.reportResult(keyId, model, false, statusCode, latency, reason, estimatedTokens, 0, prompt, null);
 
                 // Exclude key from next scheduling attempt
                 excludedKeyIds.add(keyId);
             }
         }
 
-        throw new KeysExhaustedException("Exhausted all available keys for " + provider + "/" + model 
-                + " after " + attempts + " failover attempts.");
+        String finalErr = "Exhausted all available keys for " + provider + "/" + model + " after " + attempts + " failover attempts.";
+        timeline.add(finalErr);
+        throw new KeysExhaustedException(finalErr);
     }
 
     private String simulateApiCall(ApiKey apiKey, String model, String prompt) throws Exception {
@@ -173,6 +159,15 @@ public class ProxyService {
             }
             if (prompt.contains("trigger_client_error")) {
                 throw new IllegalArgumentException("CLIENT_ERROR: Invalid parameter combination in prompt request.");
+            }
+            if (prompt.contains("trigger_unauthorized")) {
+                throw new Exception("UNAUTHORIZED_ERROR");
+            }
+            if (prompt.contains("trigger_forbidden")) {
+                throw new Exception("FORBIDDEN_ERROR");
+            }
+            if (prompt.contains("trigger_timeout")) {
+                throw new Exception("TIMEOUT_ERROR");
             }
         }
 

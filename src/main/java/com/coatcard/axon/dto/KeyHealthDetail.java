@@ -19,4 +19,8 @@ public class KeyHealthDetail {
     private String cooldownReason;
     private int remainingRpm;
     private int remainingTpm;
+    private double healthScore;
+    private int successCount;
+    private int failureCount;
+    private Long lastUsed;
 }

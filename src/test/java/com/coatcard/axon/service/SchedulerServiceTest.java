@@ -164,4 +164,42 @@ class SchedulerServiceTest {
 
         assertFalse(selected.isPresent());
     }
+
+    @Test
+    void testSelectKey_FiltersOutUnhealthyAndDisabledEntries() {
+        RedisPairEntry entry1 = RedisPairEntry.builder()
+                .keyId("key1")
+                .modelId("gpt-4o")
+                .provider("openai")
+                .currentStatus("ACTIVE")
+                .healthScore(0.1)
+                .build();
+        RedisPairEntry entry2 = RedisPairEntry.builder()
+                .keyId("key2")
+                .modelId("gpt-4o")
+                .provider("openai")
+                .currentStatus("DISABLED")
+                .healthScore(1.0)
+                .build();
+        RedisPairEntry entry3 = RedisPairEntry.builder()
+                .keyId("key3")
+                .modelId("gpt-4o")
+                .provider("openai")
+                .currentStatus("ACTIVE")
+                .healthScore(1.0)
+                .build();
+
+        ApiKey key3 = ApiKey.builder().id("key3").name("Key 3").provider("openai").active(true).build();
+
+        when(redisPairCacheService.getCandidates("openai", "gpt-4o"))
+                .thenReturn(List.of(entry1, entry2, entry3));
+
+        when(apiKeyRepository.findById("key3")).thenReturn(Optional.of(key3));
+        when(rateLimitingService.isRateLimited(any(), any(Integer.class))).thenReturn(false);
+
+        Optional<ApiKey> selected = schedulerService.selectKey("openai", "gpt-4o", 100);
+
+        assertTrue(selected.isPresent());
+        assertEquals("key3", selected.get().getId());
+    }
 }

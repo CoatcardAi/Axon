@@ -43,6 +43,14 @@ public class RetryEngineService {
      * Reports the result of a request and updates metadata, applying retry/cooldown rules on failure.
      */
     public void reportResult(String keyId, String modelId, boolean success, int statusCode, long latencyMs, String errorMessage) {
+        reportResult(keyId, modelId, success, statusCode, latencyMs, errorMessage, 0, 0, null, null);
+    }
+
+    /**
+     * Overloaded reportResult that logs prompt tokens, completion tokens, prompt content, and response text.
+     */
+    public void reportResult(String keyId, String modelId, boolean success, int statusCode, long latencyMs, String errorMessage,
+                             int promptTokens, int completionTokens, String prompt, String responseText) {
         // Find key and model details in DB to identify the provider and model name
         Optional<ApiKey> keyOpt = apiKeyRepository.findById(keyId);
         Optional<AiModel> modelOpt = modelRepository.findById(modelId);
@@ -106,15 +114,15 @@ public class RetryEngineService {
                 cacheService.savePair(entry, modelName);
                 System.out.println("API Key " + keyId + " rate-limited. Putting in COOLDOWN for " + cooldownSec + " seconds.");
 
-            } else if (statusCode == 401) {
-                // Unauthorized / Invalid Key: Disable key permanently
+            } else if (statusCode == 401 || statusCode == 403) {
+                // Unauthorized / Invalid Key / Forbidden: Disable key permanently
                 apiKey.setActive(false);
                 apiKey.setStatus(ApiKeyStatus.DISABLED);
                 apiKeyRepository.save(apiKey);
 
                 // Remove key mappings from Redis cache entirely
                 evictAllPairsForKey(apiKey);
-                System.out.println("API Key " + keyId + " returned 401. Permanently DISABLED key in DB and evicted from Redis.");
+                System.out.println("API Key " + keyId + " returned " + statusCode + ". Permanently DISABLED key in DB and evicted from Redis.");
 
             } else {
                 // Provider errors (500/503/Timeout) or other unknown errors
@@ -134,12 +142,16 @@ public class RetryEngineService {
                 .provider(provider)
                 .model(modelName)
                 .modelId(modelId)
+                .promptTokens(promptTokens)
+                .completionTokens(completionTokens)
                 .latency(latencyMs)
                 .latencyMs(latencyMs)
                 .success(success)
                 .status(success ? "SUCCESS" : translateStatusCode(statusCode))
                 .errorCode(String.valueOf(statusCode))
                 .errorMessage(errorMessage)
+                .prompt(prompt)
+                .responseText(responseText)
                 .timestamp(Instant.now())
                 .requestTime(Instant.now())
                 .build();
@@ -159,6 +171,7 @@ public class RetryEngineService {
         return switch (statusCode) {
             case 429 -> "RATE_LIMIT_ERROR";
             case 401 -> "UNAUTHORIZED";
+            case 403 -> "FORBIDDEN";
             case 400 -> "CLIENT_ERROR";
             default -> "PROVIDER_ERROR";
         };

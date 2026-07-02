@@ -33,9 +33,6 @@ public class RedisPairCacheService {
         this.mappingRepository = mappingRepository;
     }
 
-    /**
-     * Load all active key-model pairs from MongoDB into Redis.
-     */
     public void warmupCache() {
         List<ApiKey> activeKeys = apiKeyRepository.findAll().stream()
                 .filter(key -> key.isActive() || key.getStatus() == ApiKeyStatus.ACTIVE)
@@ -48,6 +45,7 @@ public class RedisPairCacheService {
         List<KeyModelMapping> mappings = mappingRepository.findAll();
 
         int loadedCount = 0;
+        Set<String> validKeys = new HashSet<>();
 
         for (ApiKey key : activeKeys) {
             // Find mapped models for this key
@@ -68,6 +66,7 @@ public class RedisPairCacheService {
 
             for (AiModel model : keyModels) {
                 String redisKey = getRedisKey(key.getProvider(), model.getName(), key.getId());
+                validKeys.add(redisKey);
                 
                 // Construct entry
                 RedisPairEntry entry = RedisPairEntry.builder()
@@ -103,7 +102,18 @@ public class RedisPairCacheService {
                 loadedCount++;
             }
         }
-        System.out.println("Cache warmed up successfully. Loaded " + loadedCount + " active pairs into Redis.");
+
+        // Clean up stale Redis keys (keys that are no longer valid/active)
+        Set<String> allCachedKeys = getAllPairKeys();
+        if (allCachedKeys != null) {
+            for (String cachedKey : allCachedKeys) {
+                if (!validKeys.contains(cachedKey)) {
+                    redisTemplate.delete(cachedKey);
+                }
+            }
+        }
+
+        System.out.println("Cache warmed up successfully. Loaded " + loadedCount + " active pairs into Redis. Cleaned up stale entries.");
     }
 
     /**
@@ -175,6 +185,27 @@ public class RedisPairCacheService {
         String redisKey = getRedisKey(provider, modelName, keyId);
         Map<Object, Object> fields = redisTemplate.opsForHash().entries(redisKey);
         return fields.isEmpty() ? null : RedisPairEntry.fromMap(fields);
+    }
+
+    /**
+     * Retrieve all pair entries currently cached in Redis.
+     */
+    public List<RedisPairEntry> getAllPairs() {
+        Set<String> keys = getAllPairKeys();
+        if (keys == null || keys.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<RedisPairEntry> entries = new ArrayList<>();
+        for (String key : keys) {
+            Map<Object, Object> fields = redisTemplate.opsForHash().entries(key);
+            if (!fields.isEmpty()) {
+                RedisPairEntry entry = RedisPairEntry.fromMap(fields);
+                if (entry != null) {
+                    entries.add(entry);
+                }
+            }
+        }
+        return entries;
     }
 
     private String getRedisKey(String provider, String modelName, String keyId) {
