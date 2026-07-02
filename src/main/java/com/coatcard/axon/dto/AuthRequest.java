@@ -10,14 +10,16 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class AuthRequest {
-    @NotBlank(message = "Username is required")
+    @NotBlank(message = "Email is required")
     @Email(message = "Please provide a valid email address")
     private String username;
 
-    @NotBlank(message = "Password is required")
-    private String password;
+    @NotBlank(message = "Name is required")
+    private String name;
 
-    private Integer age;
+    @NotBlank(message = "Date of birth is required")
+    private String dob;
 
+    @NotBlank(message = "Gender is required")
     private String gender;
 }

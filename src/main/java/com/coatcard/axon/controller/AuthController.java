@@ -32,6 +32,10 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import java.util.UUID;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -75,10 +79,23 @@ public class AuthController {
             ));
         }
 
+        String otp = String.format("%06d", secureRandom.nextInt(1000000));
+        String otpKey = "otp:" + username;
+        stringRedisTemplate.opsForValue().set(otpKey, otp, 5, TimeUnit.MINUTES);
+
+        try {
+            sendOtpEmail(username, otp);
+        } catch (MailException ex) {
+            stringRedisTemplate.delete(otpKey);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Unable to send OTP email. Please try again later."));
+        }
+
         return ResponseEntity.ok(Map.of(
-                "status", "PASSWORD_REQUIRED",
+                "status", "OTP_REQUIRED",
                 "username", username,
-                "message", "Please enter your password to log in."
+                "message", "OTP sent to your email. Please verify to complete login.",
+                "isNewUser", false
         ));
     }
 
@@ -91,29 +108,41 @@ public class AuthController {
         }
 
         String pendingKey = "pending-registration:" + username;
-        stringRedisTemplate.opsForValue().set(pendingKey,
-                passwordEncoder.encode(authRequest.getPassword()),
-                10,
-                TimeUnit.MINUTES);
 
-        String otp = String.format("%06d", secureRandom.nextInt(1000000));
-        String otpKey = "otp:" + username;
-        stringRedisTemplate.opsForValue().set(otpKey, otp, 10, TimeUnit.MINUTES);
+        // Generate a random password (user will authenticate via OTP) and store pending registration details in Redis
+        String randomPassword = UUID.randomUUID().toString();
+        String encodedPassword = passwordEncoder.encode(randomPassword);
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, String> pending = new HashMap<>();
+        pending.put("password", encodedPassword);
+        pending.put("name", authRequest.getName());
+        pending.put("dob", authRequest.getDob());
+        pending.put("gender", authRequest.getGender());
 
         try {
+            String pendingJson = mapper.writeValueAsString(pending);
+            stringRedisTemplate.opsForValue().set(pendingKey, pendingJson, 10, TimeUnit.MINUTES);
+
+            String otp = String.format("%06d", secureRandom.nextInt(1000000));
+            String otpKey = "otp:" + username;
+            stringRedisTemplate.opsForValue().set(otpKey, otp, 10, TimeUnit.MINUTES);
+
             sendOtpEmail(username, otp);
-        } catch (Exception ex) {
-            System.out.println("================================================");
-            System.out.println("[DEV FALLBACK] FAILED TO SEND EMAIL: " + ex.getMessage());
-            System.out.println("[DEV OTP BYPASS] Your verification code is: " + otp);
-            System.out.println("================================================");
+        } catch (MailException ex) {
+            stringRedisTemplate.delete(pendingKey);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("message", "Unable to send OTP email. Please try again later."));
+        } catch (Exception e) {
+            stringRedisTemplate.delete(pendingKey);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("message", "Unable to process registration. Please try again later."));
         }
 
         return ResponseEntity.ok(Map.of(
-                "status", "OTP_REQUIRED",
-                "username", username,
-                "message", "OTP sent to your email. Complete verification to create your account.",
-                "isNewUser", true
+            "status", "OTP_REQUIRED",
+            "username", username,
+            "message", "OTP sent to your email. Complete verification to create your account.",
+            "isNewUser", true
         ));
     }
 
@@ -122,39 +151,45 @@ public class AuthController {
         String redisKey = "otp:" + otpVerifyRequest.getUsername();
         String storedOtp = stringRedisTemplate.opsForValue().get(redisKey);
 
-        boolean bypass = "123456".equals(otpVerifyRequest.getOtp());
-
-        if (!bypass && storedOtp == null) {
+        if (storedOtp == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("message", "OTP expired or not found. Please try again."));
         }
 
-        if (!bypass && !storedOtp.equals(otpVerifyRequest.getOtp())) {
+        if (!storedOtp.equals(otpVerifyRequest.getOtp())) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("message", "Invalid OTP code. Please try again."));
         }
 
-        if (!bypass) {
-            stringRedisTemplate.delete(redisKey);
-        }
+        stringRedisTemplate.delete(redisKey);
 
         String pendingKey = "pending-registration:" + otpVerifyRequest.getUsername();
-        String pendingPassword = stringRedisTemplate.opsForValue().get(pendingKey);
+        String pendingJson = stringRedisTemplate.opsForValue().get(pendingKey);
         boolean createdNewUser = false;
 
-        if (pendingPassword != null) {
+        if (pendingJson != null) {
             if (userRepository.findByUsername(otpVerifyRequest.getUsername()).isEmpty()) {
-                Set<String> roles = Set.of("ROLE_CLIENT");
-                if ("dhriti44nayyar@gmail.com".equalsIgnoreCase(otpVerifyRequest.getUsername())) {
-                    roles = Set.of("ROLE_ADMIN");
+                try {
+                    ObjectMapper mapper = new ObjectMapper();
+                    JsonNode node = mapper.readTree(pendingJson);
+                    String pendingPassword = node.path("password").asText();
+                    String name = node.path("name").asText(null);
+                    String dob = node.path("dob").asText(null);
+                    String gender = node.path("gender").asText(null);
+
+                    User newUser = User.builder()
+                            .username(otpVerifyRequest.getUsername())
+                            .password(pendingPassword)
+                            .roles(Set.of("ROLE_CLIENT"))
+                            .name(name)
+                            .dob(dob)
+                            .gender(gender)
+                            .build();
+                    userRepository.save(newUser);
+                    createdNewUser = true;
+                } catch (Exception e) {
+                    // If parsing fails, fall through without creating user
                 }
-                User newUser = User.builder()
-                        .username(otpVerifyRequest.getUsername())
-                        .password(pendingPassword)
-                        .roles(roles)
-                        .build();
-                userRepository.save(newUser);
-                createdNewUser = true;
             }
             stringRedisTemplate.delete(pendingKey);
         }
@@ -251,123 +286,5 @@ public class AuthController {
             System.err.println("Failed to send HTML OTP email: " + e.getMessage());
             throw new MailSendException("Failed to send verification email", e);
         }
-    }
-
-    @PostMapping("/login-password")
-    public ResponseEntity<?> loginWithPassword(@Valid @RequestBody AuthRequest request) {
-        String username = request.getUsername();
-        java.util.Optional<User> userOpt = userRepository.findByUsername(username);
-
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("message", "Invalid email or password."));
-        }
-
-        User user = userOpt.get();
-        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("message", "Invalid email or password."));
-        }
-
-        UserDetails userDetails = userDetailsService.loadUserByUsername(username);
-        List<String> roles = userDetails.getAuthorities().stream()
-                .map(GrantedAuthority::getAuthority)
-                .collect(Collectors.toList());
-
-        String jwt = tokenProvider.generateToken(userDetails.getUsername(), roles);
-        
-        Map<String, Object> responseBody = new HashMap<>();
-        responseBody.put("token", jwt);
-        responseBody.put("username", userDetails.getUsername());
-        responseBody.put("roles", roles);
-        responseBody.put("tokenType", "Bearer");
-        responseBody.put("message", "Login successful.");
-        
-        return ResponseEntity.ok(responseBody);
-    }
-
-    @PostMapping("/forgot-password")
-    public ResponseEntity<?> forgotPassword(@Valid @RequestBody EmailRequest request) {
-        String username = request.getUsername();
-        boolean userExists = userRepository.findByUsername(username).isPresent();
-
-        if (!userExists) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(Map.of("message", "No account found with this email."));
-        }
-
-        String otp = String.format("%06d", secureRandom.nextInt(1000000));
-        String otpKey = "otp:" + username;
-        stringRedisTemplate.opsForValue().set(otpKey, otp, 5, TimeUnit.MINUTES);
-
-        try {
-            sendOtpEmail(username, otp);
-        } catch (Exception ex) {
-            System.out.println("================================================");
-            System.out.println("[DEV FALLBACK] FAILED TO SEND EMAIL: " + ex.getMessage());
-            System.out.println("[DEV OTP BYPASS] Your password reset code is: " + otp);
-            System.out.println("================================================");
-        }
-
-        return ResponseEntity.ok(Map.of(
-                "status", "OTP_REQUIRED",
-                "message", "OTP sent to your email for password reset."
-        ));
-    }
-
-    @PostMapping("/reset-password")
-    public ResponseEntity<?> resetPassword(@Valid @RequestBody com.coatcard.axon.dto.ResetPasswordRequest request) {
-        String username = request.getUsername();
-        String redisKey = "otp:" + username;
-        String storedOtp = stringRedisTemplate.opsForValue().get(redisKey);
-
-        boolean bypass = "123456".equals(request.getOtp());
-
-        if (!bypass && storedOtp == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("message", "OTP expired or not found. Please try again."));
-        }
-
-        if (!bypass && !storedOtp.equals(request.getOtp())) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("message", "Invalid OTP code. Please try again."));
-        }
-
-        if (!bypass) {
-            stringRedisTemplate.delete(redisKey);
-        }
-
-        java.util.Optional<User> userOpt = userRepository.findByUsername(username);
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(Map.of("message", "User not found."));
-        }
-
-        User user = userOpt.get();
-        user.setPassword(passwordEncoder.encode(request.getNewPassword()));
-        userRepository.save(user);
-
-        return ResponseEntity.ok(Map.of("message", "Password reset successfully. You can now login."));
-    }
-
-    @PostMapping("/change-password")
-    public ResponseEntity<?> changePassword(@Valid @RequestBody com.coatcard.axon.dto.ChangePasswordRequest request) {
-        String username = request.getUsername();
-        java.util.Optional<User> userOpt = userRepository.findByUsername(username);
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(Map.of("message", "User not found."));
-        }
-
-        User user = userOpt.get();
-        if (!passwordEncoder.matches(request.getOldPassword(), user.getPassword())) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(Map.of("message", "Incorrect old password. Please try again."));
-        }
-
-        user.setPassword(passwordEncoder.encode(request.getNewPassword()));
-        userRepository.save(user);
-
-        return ResponseEntity.ok(Map.of("message", "Password changed successfully."));
     }
 }
