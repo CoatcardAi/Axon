@@ -61,15 +61,28 @@ public class ApiKeyService {
             existing.setAllowedModels(details.getAllowedModels());
         }
 
-        existing.setLimitRpm(details.getLimitRpm());
+                existing.setLimitRpm(details.getLimitRpm());
         existing.setLimitTpm(details.getLimitTpm());
         existing.setCooldownDurationSeconds(details.getCooldownDurationSeconds());
         
-        if (details.getStatus() != null) {
+        // Synchronize active and status based on which one changed
+        boolean activeChanged = details.isActive() != existing.isActive();
+        boolean statusChanged = details.getStatus() != null && details.getStatus() != existing.getStatus();
+        
+        if (activeChanged && !statusChanged) {
+            existing.setActive(details.isActive());
+            existing.setStatus(details.isActive() ? ApiKeyStatus.ACTIVE : ApiKeyStatus.DISABLED);
+        } else if (statusChanged && !activeChanged) {
             existing.setStatus(details.getStatus());
             existing.setActive(details.getStatus() == ApiKeyStatus.ACTIVE);
         } else {
-            existing.setActive(details.isActive());
+            if (details.getStatus() != null) {
+                existing.setStatus(details.getStatus());
+                existing.setActive(details.getStatus() == ApiKeyStatus.ACTIVE);
+            } else {
+                existing.setActive(details.isActive());
+                existing.setStatus(details.isActive() ? ApiKeyStatus.ACTIVE : ApiKeyStatus.DISABLED);
+            }
         }
         
         existing.setMetadata(details.getMetadata());

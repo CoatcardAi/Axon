@@ -99,6 +99,7 @@ public class AdminController {
     @DeleteMapping("/keys/{id}")
     public ResponseEntity<Void> deleteKey(@PathVariable String id) {
         apiKeyService.deleteKey(id);
+        mappingRepository.deleteByKeyId(id);
         tryWarmupCache();
         return ResponseEntity.noContent().build();
     }
