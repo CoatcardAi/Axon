@@ -104,6 +104,13 @@ public class AdminController {
         return ResponseEntity.noContent().build();
     }
 
+    @PostMapping("/keys/activate-all")
+    public ResponseEntity<Void> activateAllKeys() {
+        apiKeyService.activateAllKeys();
+        tryWarmupCache();
+        return ResponseEntity.ok().build();
+    }
+
     // --- Cooldown Overrides ---
 
     @PostMapping("/keys/{id}/cooldown")

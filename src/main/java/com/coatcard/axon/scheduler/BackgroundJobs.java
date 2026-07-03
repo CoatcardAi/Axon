@@ -54,10 +54,11 @@ public class BackgroundJobs {
 
         for (String key : keys) {
             String[] parts = key.split(":");
-            if (parts.length < 3) continue;
-            String provider = parts[0];
-            String modelName = parts[1];
-            String keyId = parts[2];
+            // Format: pair:{provider}:{modelName}:{keyId}  -> 4 parts
+            if (parts.length < 4) continue;
+            String provider = parts[1];
+            String modelName = parts[2];
+            String keyId = parts[3];
 
             RedisPairEntry entry = cacheService.getPair(provider, modelName, keyId);
             if (entry != null) {
@@ -113,10 +114,11 @@ public class BackgroundJobs {
 
         for (String key : keys) {
             String[] parts = key.split(":");
-            if (parts.length < 3) continue;
-            String provider = parts[0];
-            String modelName = parts[1];
-            String keyId = parts[2];
+            // Format: pair:{provider}:{modelName}:{keyId}
+            if (parts.length < 4) continue;
+            String provider = parts[1];
+            String modelName = parts[2];
+            String keyId = parts[3];
 
             RedisPairEntry entry = cacheService.getPair(provider, modelName, keyId);
             if (entry != null) {

@@ -1,6 +1,7 @@
 package com.coatcard.axon.service;
 
 import com.coatcard.axon.model.ApiKey;
+import com.coatcard.axon.redis.RedisPairEntry;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -16,10 +17,18 @@ public class RateLimitingService {
     }
 
     public boolean isRateLimited(ApiKey apiKey, int estimatedTokens) {
+        return isRateLimited(apiKey.getId(), apiKey.getLimitRpm(), apiKey.getLimitTpm(), estimatedTokens);
+    }
+
+    public boolean isRateLimitedForEntry(RedisPairEntry entry, int estimatedTokens) {
+        return isRateLimited(entry.getKeyId(), entry.getLimitRpm(), entry.getLimitTpm(), estimatedTokens);
+    }
+
+    public boolean isRateLimited(String keyId, int limitRpm, int limitTpm, int estimatedTokens) {
         try {
             long currentMinute = System.currentTimeMillis() / 60000;
-            String rpmKey = getRpmKey(apiKey.getId(), currentMinute);
-            String tpmKey = getTpmKey(apiKey.getId(), currentMinute);
+            String rpmKey = getRpmKey(keyId, currentMinute);
+            String tpmKey = getTpmKey(keyId, currentMinute);
 
             String rpmVal = stringRedisTemplate.opsForValue().get(rpmKey);
             String tpmVal = stringRedisTemplate.opsForValue().get(tpmKey);
@@ -27,11 +36,11 @@ public class RateLimitingService {
             int currentRpm = rpmVal != null ? Integer.parseInt(rpmVal) : 0;
             int currentTpm = tpmVal != null ? Integer.parseInt(tpmVal) : 0;
 
-            if (apiKey.getLimitRpm() > 0 && currentRpm >= apiKey.getLimitRpm()) {
+            if (limitRpm > 0 && currentRpm >= limitRpm) {
                 return true;
             }
 
-            if (apiKey.getLimitTpm() > 0 && (currentTpm + estimatedTokens) > apiKey.getLimitTpm()) {
+            if (limitTpm > 0 && (currentTpm + estimatedTokens) > limitTpm) {
                 return true;
             }
 

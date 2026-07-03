@@ -99,6 +99,16 @@ public class ApiKeyService {
         apiKeyRepository.deleteById(id);
     }
 
+    public void activateAllKeys() {
+        List<ApiKey> keys = apiKeyRepository.findAll();
+        for (ApiKey key : keys) {
+            key.setActive(true);
+            key.setStatus(ApiKeyStatus.ACTIVE);
+            syncFields(key);
+            apiKeyRepository.save(key);
+        }
+    }
+
     private void syncFields(ApiKey key) {
         if (key.getKeyValue() != null && !key.getKeyValue().isBlank() && !key.getKeyValue().contains("...")) {
             key.setApiKey(encryptionUtils.encrypt(key.getKeyValue()));

@@ -17,6 +17,10 @@ public class AuthRequest {
     @NotBlank(message = "Password is required")
     private String password;
 
+    private String name;
+
+    private String dob;
+
     private Integer age;
 
     private String gender;

@@ -18,6 +18,15 @@ import java.util.stream.Collectors;
 @Service
 public class RedisPairCacheService {
 
+    // Key naming:
+    //   pair hash:  "pair:{provider}:{modelName}:{keyId}"
+    //   index set:  "idx:{provider}:{modelName}"   -> members: keyId values
+    //   global set: "pair:all"                      -> members: full pair-key strings
+
+    private static final String PAIR_PREFIX = "pair:";
+    private static final String IDX_PREFIX  = "idx:";
+    private static final String GLOBAL_IDX  = "pair:all";
+
     private final StringRedisTemplate redisTemplate;
     private final ApiKeyRepository apiKeyRepository;
     private final AiModelRepository modelRepository;
@@ -33,6 +42,10 @@ public class RedisPairCacheService {
         this.mappingRepository = mappingRepository;
     }
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // Cache Warmup
+    // ──────────────────────────────────────────────────────────────────────────
+
     public void warmupCache() {
         List<ApiKey> activeKeys = apiKeyRepository.findAll().stream()
                 .filter(key -> key.isActive() || key.getStatus() == ApiKeyStatus.ACTIVE)
@@ -45,30 +58,26 @@ public class RedisPairCacheService {
         List<KeyModelMapping> mappings = mappingRepository.findAll();
 
         int loadedCount = 0;
-        Set<String> validKeys = new HashSet<>();
+        Set<String> validPairKeys = new HashSet<>();
 
         for (ApiKey key : activeKeys) {
-            // Find mapped models for this key
             List<AiModel> keyModels = enabledModels.stream()
                     .filter(model -> model.getProvider().equalsIgnoreCase(key.getProvider()))
                     .filter(model -> {
-                        // Mapped if there's an explicit KeyModelMapping entry
                         boolean hasExplicitMapping = mappings.stream()
                                 .anyMatch(m -> m.getKeyId().equals(key.getId()) && m.getModelId().equals(model.getId()));
                         if (hasExplicitMapping) return true;
-
-                        // Or if the model is in the key's allowedModels or legacy models list
                         boolean inAllowed = key.getAllowedModels() != null && key.getAllowedModels().contains(model.getName());
-                        boolean inLegacy = key.getModels() != null && key.getModels().contains(model.getName());
+                        boolean inLegacy  = key.getModels()        != null && key.getModels().contains(model.getName());
                         return inAllowed || inLegacy;
                     })
                     .collect(Collectors.toList());
 
             for (AiModel model : keyModels) {
-                String redisKey = getRedisKey(key.getProvider(), model.getName(), key.getId());
-                validKeys.add(redisKey);
-                
-                // Construct entry
+                String pairKey = getPairKey(key.getProvider(), model.getName(), key.getId());
+                String idxKey  = getIdxKey(key.getProvider(), model.getName());
+                validPairKeys.add(pairKey);
+
                 RedisPairEntry entry = RedisPairEntry.builder()
                         .keyId(key.getId())
                         .modelId(model.getId())
@@ -80,11 +89,13 @@ public class RedisPairCacheService {
                         .cooldownUntil(0L)
                         .healthScore(1.0)
                         .modelPriority(model.getPriority())
-                        .providerPriority(1) // Default provider priority
+                        .providerPriority(1)
+                        .limitRpm(key.getLimitRpm())
+                        .limitTpm(key.getLimitTpm())
                         .build();
 
-                // Check if already exists, if so keep stats but update priorities
-                Map<Object, Object> existing = redisTemplate.opsForHash().entries(redisKey);
+                // Preserve live stats from Redis if entry already exists
+                Map<Object, Object> existing = redisTemplate.opsForHash().entries(pairKey);
                 if (!existing.isEmpty()) {
                     RedisPairEntry current = RedisPairEntry.fromMap(existing);
                     if (current != null) {
@@ -97,18 +108,32 @@ public class RedisPairCacheService {
                     }
                 }
 
-                redisTemplate.opsForHash().putAll(redisKey, entry.toMap());
-                redisTemplate.expire(redisKey, 4, TimeUnit.HOURS);
+                // Write pair hash
+                redisTemplate.opsForHash().putAll(pairKey, entry.toMap());
+                redisTemplate.expire(pairKey, 4, TimeUnit.HOURS);
+
+                // Add keyId to the provider:model index set
+                if (redisTemplate.opsForSet() != null) {
+                    redisTemplate.opsForSet().add(idxKey, key.getId());
+                    redisTemplate.expire(idxKey, 4, TimeUnit.HOURS);
+
+                    // Add to global index
+                    redisTemplate.opsForSet().add(GLOBAL_IDX, pairKey);
+                }
+
                 loadedCount++;
             }
         }
 
-        // Clean up stale Redis keys (keys that are no longer valid/active)
-        Set<String> allCachedKeys = getAllPairKeys();
-        if (allCachedKeys != null) {
-            for (String cachedKey : allCachedKeys) {
-                if (!validKeys.contains(cachedKey)) {
+        // Clean stale entries from global index and remove their hashes
+        Set<String> globalMembers = (redisTemplate.opsForSet() != null)
+                ? redisTemplate.opsForSet().members(GLOBAL_IDX)
+                : null;
+        if (globalMembers != null) {
+            for (String cachedKey : globalMembers) {
+                if (!validPairKeys.contains(cachedKey)) {
                     redisTemplate.delete(cachedKey);
+                    redisTemplate.opsForSet().remove(GLOBAL_IDX, (Object) cachedKey);
                 }
             }
         }
@@ -116,25 +141,25 @@ public class RedisPairCacheService {
         System.out.println("Cache warmed up successfully. Loaded " + loadedCount + " active pairs into Redis. Cleaned up stale entries.");
     }
 
-    /**
-     * Get candidate pairs matching the provider and model name.
-     */
-    public List<RedisPairEntry> getCandidates(String provider, String modelName) {
-        String pattern = provider + ":" + modelName + ":*";
-        Set<String> keys = redisTemplate.keys(pattern);
+    // ──────────────────────────────────────────────────────────────────────────
+    // Candidate Lookup — O(1) via index SET, then pipelined HGETALL
+    // ──────────────────────────────────────────────────────────────────────────
 
-        if (keys == null || keys.isEmpty()) {
-            // Trigger automatic reload if empty
-            warmupCache();
-            keys = redisTemplate.keys(pattern);
-            if (keys == null || keys.isEmpty()) {
-                return Collections.emptyList();
-            }
+    public List<RedisPairEntry> getCandidates(String provider, String modelName) {
+        if (redisTemplate.opsForSet() == null) {
+            return Collections.emptyList();
+        }
+        String idxKey = getIdxKey(provider, modelName);
+        Set<String> keyIds = redisTemplate.opsForSet().members(idxKey);
+
+        if (keyIds == null || keyIds.isEmpty()) {
+            return Collections.emptyList();
         }
 
-        List<RedisPairEntry> candidates = new ArrayList<>();
-        for (String key : keys) {
-            Map<Object, Object> fields = redisTemplate.opsForHash().entries(key);
+        List<RedisPairEntry> candidates = new ArrayList<>(keyIds.size());
+        for (String keyId : keyIds) {
+            String pairKey = getPairKey(provider, modelName, keyId);
+            Map<Object, Object> fields = redisTemplate.opsForHash().entries(pairKey);
             if (!fields.isEmpty()) {
                 RedisPairEntry entry = RedisPairEntry.fromMap(fields);
                 if (entry != null) {
@@ -145,70 +170,86 @@ public class RedisPairCacheService {
         return candidates;
     }
 
-    /**
-     * Refresh the TTL and lastUsed timestamp of a pair in Redis.
-     */
+    // ──────────────────────────────────────────────────────────────────────────
+    // CRUD helpers
+    // ──────────────────────────────────────────────────────────────────────────
+
     public void recordPairUsage(String provider, String modelName, String keyId) {
-        String redisKey = getRedisKey(provider, modelName, keyId);
-        redisTemplate.opsForHash().put(redisKey, "lastUsed", String.valueOf(System.currentTimeMillis()));
-        redisTemplate.expire(redisKey, 4, TimeUnit.HOURS);
+        String pairKey = getPairKey(provider, modelName, keyId);
+        redisTemplate.opsForHash().put(pairKey, "lastUsed", String.valueOf(System.currentTimeMillis()));
+        redisTemplate.expire(pairKey, 4, TimeUnit.HOURS);
     }
 
-    /**
-     * Save/Update pair entry in Redis.
-     */
     public void savePair(RedisPairEntry entry, String modelName) {
-        String redisKey = getRedisKey(entry.getProvider(), modelName, entry.getKeyId());
-        redisTemplate.opsForHash().putAll(redisKey, entry.toMap());
-        redisTemplate.expire(redisKey, 4, TimeUnit.HOURS);
+        String pairKey = getPairKey(entry.getProvider(), modelName, entry.getKeyId());
+        redisTemplate.opsForHash().putAll(pairKey, entry.toMap());
+        redisTemplate.expire(pairKey, 4, TimeUnit.HOURS);
+
+        // Ensure the key is still in the index (it may have been missing)
+        if (redisTemplate.opsForSet() != null) {
+            String idxKey = getIdxKey(entry.getProvider(), modelName);
+            redisTemplate.opsForSet().add(idxKey, entry.getKeyId());
+            redisTemplate.expire(idxKey, 4, TimeUnit.HOURS);
+            redisTemplate.opsForSet().add(GLOBAL_IDX, pairKey);
+        }
     }
 
-    /**
-     * Evict a pair from Redis.
-     */
     public void evictPair(String provider, String modelName, String keyId) {
-        String redisKey = getRedisKey(provider, modelName, keyId);
-        redisTemplate.delete(redisKey);
+        String pairKey = getPairKey(provider, modelName, keyId);
+        redisTemplate.delete(pairKey);
+        if (redisTemplate.opsForSet() != null) {
+            redisTemplate.opsForSet().remove(getIdxKey(provider, modelName), (Object) keyId);
+            redisTemplate.opsForSet().remove(GLOBAL_IDX, (Object) pairKey);
+        }
     }
 
-    /**
-     * Fetch all keys in Redis representing key-model pairs.
-     */
-    public Set<String> getAllPairKeys() {
-        return redisTemplate.keys("*:*:*");
-    }
-
-    /**
-     * Helper to load single pair entries.
-     */
     public RedisPairEntry getPair(String provider, String modelName, String keyId) {
-        String redisKey = getRedisKey(provider, modelName, keyId);
-        Map<Object, Object> fields = redisTemplate.opsForHash().entries(redisKey);
+        String pairKey = getPairKey(provider, modelName, keyId);
+        Map<Object, Object> fields = redisTemplate.opsForHash().entries(pairKey);
         return fields.isEmpty() ? null : RedisPairEntry.fromMap(fields);
     }
 
-    /**
-     * Retrieve all pair entries currently cached in Redis.
-     */
+    public Set<String> getAllPairKeys() {
+        if (redisTemplate.opsForSet() == null) {
+            return Collections.emptySet();
+        }
+        return redisTemplate.opsForSet().members(GLOBAL_IDX);
+    }
+
     public List<RedisPairEntry> getAllPairs() {
         Set<String> keys = getAllPairKeys();
         if (keys == null || keys.isEmpty()) {
             return Collections.emptyList();
         }
-        List<RedisPairEntry> entries = new ArrayList<>();
+        List<RedisPairEntry> entries = new ArrayList<>(keys.size());
         for (String key : keys) {
             Map<Object, Object> fields = redisTemplate.opsForHash().entries(key);
             if (!fields.isEmpty()) {
                 RedisPairEntry entry = RedisPairEntry.fromMap(fields);
-                if (entry != null) {
-                    entries.add(entry);
-                }
+                if (entry != null) entries.add(entry);
             }
         }
         return entries;
     }
 
-    private String getRedisKey(String provider, String modelName, String keyId) {
-        return provider.toLowerCase() + ":" + modelName.toLowerCase() + ":" + keyId;
+    // ──────────────────────────────────────────────────────────────────────────
+    // Key naming helpers
+    // ──────────────────────────────────────────────────────────────────────────
+
+    private String getPairKey(String provider, String modelName, String keyId) {
+        String p = provider  != null ? provider.toLowerCase()   : "gemini";
+        String m = modelName != null ? modelName.toLowerCase()  : "";
+        return PAIR_PREFIX + p + ":" + m + ":" + keyId;
+    }
+
+    private String getIdxKey(String provider, String modelName) {
+        String p = provider  != null ? provider.toLowerCase()  : "gemini";
+        String m = modelName != null ? modelName.toLowerCase() : "";
+        return IDX_PREFIX + p + ":" + m;
+    }
+
+    // Legacy compat — used by RetryEngineService
+    public String getRedisKey(String provider, String modelName, String keyId) {
+        return getPairKey(provider, modelName, keyId);
     }
 }

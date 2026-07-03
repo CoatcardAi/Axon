@@ -24,6 +24,8 @@ public class RedisPairEntry {
     private double healthScore;
     private int modelPriority;
     private int providerPriority;
+    private int limitRpm;
+    private int limitTpm;
 
     public static RedisPairEntry fromMap(Map<Object, Object> map) {
         if (map == null || map.isEmpty()) {
@@ -41,6 +43,8 @@ public class RedisPairEntry {
                 .healthScore(parseDouble(map.get("healthScore")))
                 .modelPriority(parseInt(map.get("modelPriority")))
                 .providerPriority(parseInt(map.get("providerPriority")))
+                .limitRpm(parseInt(map.get("limitRpm")))
+                .limitTpm(parseInt(map.get("limitTpm")))
                 .build();
     }
 
@@ -57,6 +61,8 @@ public class RedisPairEntry {
         map.put("healthScore", String.valueOf(healthScore));
         map.put("modelPriority", String.valueOf(modelPriority));
         map.put("providerPriority", String.valueOf(providerPriority));
+        map.put("limitRpm", String.valueOf(limitRpm));
+        map.put("limitTpm", String.valueOf(limitTpm));
         return map;
     }
 

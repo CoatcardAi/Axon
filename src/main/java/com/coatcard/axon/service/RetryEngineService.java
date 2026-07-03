@@ -80,7 +80,13 @@ public class RetryEngineService {
                     .healthScore(1.0)
                     .modelPriority(modelOpt.map(AiModel::getPriority).orElse(1))
                     .providerPriority(1)
+                    .limitRpm(apiKey.getLimitRpm())
+                    .limitTpm(apiKey.getLimitTpm())
                     .build();
+        }
+        
+        if (entry.getProvider() == null) {
+            entry.setProvider(provider != null ? provider : "gemini");
         }
 
         long now = System.currentTimeMillis();
@@ -114,15 +120,23 @@ public class RetryEngineService {
                 cacheService.savePair(entry, modelName);
                 System.out.println("API Key " + keyId + " rate-limited. Putting in COOLDOWN for " + cooldownSec + " seconds.");
 
-            } else if (statusCode == 401 || statusCode == 403) {
-                // Unauthorized / Invalid Key / Forbidden: Disable key permanently
+            } else if (statusCode == 401) {
+                // Unauthorized / Invalid Key: Disable key permanently
                 apiKey.setActive(false);
                 apiKey.setStatus(ApiKeyStatus.DISABLED);
                 apiKeyRepository.save(apiKey);
 
                 // Remove key mappings from Redis cache entirely
                 evictAllPairsForKey(apiKey);
-                System.out.println("API Key " + keyId + " returned " + statusCode + ". Permanently DISABLED key in DB and evicted from Redis.");
+                System.out.println("API Key " + keyId + " returned 401. Permanently DISABLED key in DB and evicted from Redis.");
+
+            } else if (statusCode == 403) {
+                // Forbidden: Put in cooldown rather than permanently disabling
+                int cooldownSec = apiKey.getCooldownDurationSeconds() > 0 ? apiKey.getCooldownDurationSeconds() : defaultCooldownSeconds;
+                entry.setCurrentStatus("COOLDOWN");
+                entry.setCooldownUntil(now + (cooldownSec * 1000L));
+                cacheService.savePair(entry, modelName);
+                System.out.println("API Key " + keyId + " returned 403 (Forbidden) for model " + modelName + ". Putting in COOLDOWN for " + cooldownSec + " seconds.");
 
             } else {
                 // Provider errors (500/503/Timeout) or other unknown errors

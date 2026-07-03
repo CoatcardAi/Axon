@@ -25,16 +25,16 @@ public class DatabaseSeeder implements CommandLineRunner {
 
     private static final String GEMINI_PROVIDER = "gemini";
 
+    // Verified working Gemini models as of July 2026.
+    // Gemini 1.5, 2.0 were shut down June 2026. Gemma aliases and
+    // gemini-flash-latest style aliases are not stable model IDs.
     private static final List<String> GEMINI_MODELS = List.of(
-            "gemini-3.5-flash",
-            "gemma-4-31b-it",
-            "gemini-flash-latest",
-            "gemini-2.5-flash",
-            "gemma-4-26b-a4b-it",
-            "gemini-2.5-flash-lite",
-            "gemini-3.1-flash-lite-preview",
-            "gemini-flash-lite-latest"
+            "gemini-3.5-flash",       // Current flagship, fastest for complex tasks
+            "gemini-2.5-flash",       // Stable production model
+            "gemini-2.5-flash-lite",  // Fastest, cheapest — use for simple prompts
+            "gemini-2.5-pro"          // Largest, most capable
     );
+
 
     private final UserRepository userRepository;
     private final ProviderRepository providerRepository;

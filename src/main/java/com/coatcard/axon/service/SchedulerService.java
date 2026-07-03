@@ -26,6 +26,9 @@ public class SchedulerService {
     @Value("${axon.scheduler.strategy:LRU}")
     private String defaultStrategyName;
 
+    // Map of normalizedModel -> sticky keyId
+    private final java.util.Map<String, String> stickyKeys = new java.util.concurrent.ConcurrentHashMap<>();
+
     public SchedulerService(ApiKeyRepository apiKeyRepository,
                             RateLimitingService rateLimitingService,
                             CooldownService cooldownService,
@@ -62,6 +65,37 @@ public class SchedulerService {
             return Optional.empty();
         }
 
+        // 1. Try to reuse sticky key for this model to reduce response latency
+        String stickyKeyId = stickyKeys.get(normalizedModel);
+        if (stickyKeyId != null && !excludedKeyIds.contains(stickyKeyId)) {
+            Optional<RedisPairEntry> stickyEntryOpt = candidates.stream()
+                    .filter(entry -> entry.getKeyId().equals(stickyKeyId))
+                    .findFirst();
+
+            if (stickyEntryOpt.isPresent()) {
+                RedisPairEntry entry = stickyEntryOpt.get();
+                long now = System.currentTimeMillis();
+                
+                boolean isEligible = "ACTIVE".equalsIgnoreCase(entry.getCurrentStatus())
+                        && entry.getCooldownUntil() <= now
+                        && entry.getHealthScore() >= 0.2;
+
+                if (isEligible && !isRateLimitedSafe(entry, estimatedTokens)) {
+                    Optional<ApiKey> keyOpt = apiKeyRepository.findById(entry.getKeyId());
+                    if (keyOpt.isPresent()) {
+                        redisPairCacheService.recordPairUsage(provider, model, entry.getKeyId());
+                        ApiKey key = keyOpt.get();
+                        if (key.getApiKey() != null) {
+                            key.setKeyValue(encryptionUtils.decrypt(key.getApiKey()));
+                        }
+                        return Optional.of(key);
+                    }
+                }
+            }
+            // Evict if no longer eligible
+            stickyKeys.remove(normalizedModel);
+        }
+
         long now = System.currentTimeMillis();
 
         // Filter out DISABLED, COOLDOWN, UNHEALTHY
@@ -70,13 +104,7 @@ public class SchedulerService {
                 .filter(entry -> entry.getCooldownUntil() <= now)
                 .filter(entry -> entry.getHealthScore() >= 0.2) // Below 0.2 health score is considered unhealthy
                 .filter(entry -> !excludedKeyIds.contains(entry.getKeyId()))
-                .filter(entry -> {
-                    // Check rate limiting in Redis if keys are rate limited
-                    // Look up actual ApiKey from DB briefly for limit checks or do in memory
-                    // To keep it high performance, let's load the key object
-                    Optional<ApiKey> keyOpt = apiKeyRepository.findById(entry.getKeyId());
-                    return keyOpt.isPresent() && !isRateLimitedSafe(keyOpt.get(), estimatedTokens);
-                })
+                .filter(entry -> !isRateLimitedSafe(entry, estimatedTokens))
                 .collect(Collectors.toList());
 
         if (eligible.isEmpty()) {
@@ -92,6 +120,9 @@ public class SchedulerService {
         }
 
         RedisPairEntry selectedPair = selectedPairOpt.get();
+
+        // Cache as the new sticky key for this model
+        stickyKeys.put(normalizedModel, selectedPair.getKeyId());
 
         // Update usage in Redis
         redisPairCacheService.recordPairUsage(provider, model, selectedPair.getKeyId());
@@ -131,6 +162,15 @@ public class SchedulerService {
             return rateLimitingService.isRateLimited(key, tokens);
         } catch (Exception e) {
             System.err.println("Redis is down, ignoring rate-limiting check for key: " + key.getId());
+            return false;
+        }
+    }
+
+    private boolean isRateLimitedSafe(RedisPairEntry entry, int tokens) {
+        try {
+            return rateLimitingService.isRateLimitedForEntry(entry, tokens);
+        } catch (Exception e) {
+            System.err.println("Redis is down, ignoring rate-limiting check for key: " + entry.getKeyId());
             return false;
         }
     }

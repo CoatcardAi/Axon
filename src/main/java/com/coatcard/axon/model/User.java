@@ -24,6 +24,10 @@ public class User {
 
     private String password;
 
+    private String name;
+
+    private String dob;
+
     private Integer age;
 
     private String gender;

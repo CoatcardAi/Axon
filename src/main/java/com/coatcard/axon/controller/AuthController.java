@@ -156,6 +156,8 @@ public class AuthController {
                 String passwordVal = null;
                 Integer ageVal = null;
                 String genderVal = null;
+                String nameVal = null;
+                String dobVal = null;
 
                 if (pendingData.startsWith("{")) {
                     try {
@@ -166,6 +168,12 @@ public class AuthController {
                         }
                         if (node.has("gender") && !node.path("gender").isNull()) {
                             genderVal = node.path("gender").asText();
+                        }
+                        if (node.has("name") && !node.path("name").isNull()) {
+                            nameVal = node.path("name").asText();
+                        }
+                        if (node.has("dob") && !node.path("dob").isNull()) {
+                            dobVal = node.path("dob").asText();
                         }
                     } catch (Exception ex) {
                         System.err.println("Failed parsing pending registration json: " + ex.getMessage());
@@ -183,6 +191,8 @@ public class AuthController {
                 User newUser = User.builder()
                         .username(otpVerifyRequest.getUsername())
                         .password(passwordVal)
+                        .name(nameVal)
+                        .dob(dobVal)
                         .age(ageVal)
                         .gender(genderVal)
                         .roles(roles)
@@ -210,6 +220,15 @@ public class AuthController {
                 ? "Account created and login successful."
                 : "OTP verified. Login successful.");
         responseBody.put("isNewUser", createdNewUser);
+
+        java.util.Optional<User> userOpt = userRepository.findByUsername(otpVerifyRequest.getUsername());
+        if (userOpt.isPresent()) {
+            User userObj = userOpt.get();
+            responseBody.put("name", userObj.getName());
+            responseBody.put("dob", userObj.getDob());
+            responseBody.put("age", userObj.getAge());
+            responseBody.put("gender", userObj.getGender());
+        }
 
         return ResponseEntity.ok(responseBody);
     }
@@ -316,6 +335,10 @@ public class AuthController {
         responseBody.put("roles", roles);
         responseBody.put("tokenType", "Bearer");
         responseBody.put("message", "Login successful.");
+        responseBody.put("name", user.getName());
+        responseBody.put("dob", user.getDob());
+        responseBody.put("age", user.getAge());
+        responseBody.put("gender", user.getGender());
         
         return ResponseEntity.ok(responseBody);
     }
